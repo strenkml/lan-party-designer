@@ -1,0 +1,32 @@
+{
+  "name": "@lpd/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@fontsource-variable/bricolage-grotesque": "^5.3.0",
+    "@fontsource-variable/instrument-sans": "^5.3.0",
+    "@lpd/shared": "workspace:*",
+    "@tanstack/react-query": "^5.90.0",
+    "immer": "^11.1.21",
+    "konva": "^10.0.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-konva": "^19.0.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.0"
+  }
+}

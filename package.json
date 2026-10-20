@@ -1,0 +1,15 @@
+{
+  "name": "lan-party-designer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "e2e": "pnpm --filter @lpd/web build && playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1"
+  }
+}

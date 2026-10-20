@@ -1,0 +1,12 @@
+services:
+  lan-party-designer:
+    build: .
+    image: lan-party-designer
+    ports:
+      - "3000:3000"
+    volumes:
+      - lan-party-data:/data
+    restart: unless-stopped
+
+volumes:
+  lan-party-data:
