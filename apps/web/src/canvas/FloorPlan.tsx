@@ -4,6 +4,7 @@ import { Circle, Group, Image as KImage, Layer, Line, Rect, Shape, Stage, Text }
 import { type EventDoc, type Level, type Point, type VenueDoc } from "@lpd/shared";
 import { uploadUrl } from "../lib/api";
 import { useCssColors } from "../theme/theme";
+import { guideRoomPoint, type GuidedPoint } from "../lib/guides";
 import { useImage } from "./useImage";
 
 /** Pixels per foot at zoom 1. */
@@ -63,7 +64,7 @@ export function FloorPlan(props: FloorPlanProps) {
   const stageRef = useRef<Konva.Stage>(null);
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [view, setView] = useState({ x: 40, y: 40, scale: 1 });
-  const [cursor, setCursor] = useState<Point | null>(null);
+  const [cursor, setCursor] = useState<GuidedPoint | null>(null);
   const fitted = useRef(false);
 
   const bgImage = useImage(venue.background ? uploadUrl(venue.background.file) : null);
@@ -116,6 +117,14 @@ export function FloorPlan(props: FloorPlanProps) {
     return p ? { x: p.x / PPF, y: p.y / PPF } : null;
   };
 
+  /** Pointer position, run through the room guides while drawing a room. */
+  const guidedPointer = (shift: boolean): GuidedPoint | null => {
+    const p = pointer();
+    if (!p) return null;
+    if (props.tool === "room") return guideRoomPoint(props.roomDraft, p, { snapGrid: props.snap, disabled: shift });
+    return { point: { x: snapTo(p.x, props.snap), y: snapTo(p.y, props.snap) }, guides: [] };
+  };
+
   const onWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
     const stage = stageRef.current!;
@@ -155,13 +164,12 @@ export function FloorPlan(props: FloorPlanProps) {
 
   const onStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (e.target !== e.target.getStage() && !e.target.attrs.bg) return;
-    const p = pointer();
-    if (!p) return;
     if (props.tool === "select") {
       props.onSelect(null);
       return;
     }
-    props.onCanvasClick({ x: snapTo(p.x, props.snap), y: snapTo(p.y, props.snap) });
+    const g = guidedPointer(e.evt.shiftKey);
+    if (g) props.onCanvasClick(g.point);
   };
 
   const allowDrop = (e: ReactDragEvent) => e.preventDefault();
@@ -205,8 +213,9 @@ export function FloorPlan(props: FloorPlanProps) {
 
   const tool = props.tool;
   const hint =
-    tool === "room" ? "Click to add corners. Double-click or press Enter to close the outline."
+    tool === "room" ? "Click to add corners. Guides square them up (hold Shift to draw freely). Click the first corner or press Enter to close."
     : tool === "calibrate" ? `Click two points that are a known distance apart (${props.calibration.length}/2).`
+    : tool === "door" || tool === "outlet" ? `Click near a wall to place ${tool === "door" ? "a door" : "an outlet"}. It snaps onto the wall. Press Esc to stop.`
     : tool !== "select" ? "Click on the plan to place. Press Esc to stop." : null;
 
   return (
@@ -230,8 +239,7 @@ export function FloorPlan(props: FloorPlanProps) {
         onDragEnd={(e) => e.target === e.target.getStage() && setView((v) => ({ ...v, x: e.target.x(), y: e.target.y() }))}
         onWheel={onWheel}
         onClick={onStageClick}
-        onDblClick={() => tool === "room" && props.onRoomFinish()}
-        onMouseMove={() => (tool === "room" ? setCursor(pointer()) : undefined)}
+        onMouseMove={(e) => (tool === "room" ? setCursor(guidedPointer(e.evt.shiftKey)) : undefined)}
         style={{ cursor: tool === "select" ? "default" : "crosshair" }}
       >
         <Layer>
@@ -292,12 +300,27 @@ export function FloorPlan(props: FloorPlanProps) {
             </Group>
           ))}
 
-          {venue.doors.map((d) => (
-            <Group key={d.id} x={d.x * PPF} y={d.y * PPF} rotation={d.rotation} {...dragProps({ kind: "door", id: d.id })}>
-              <Rect x={(-d.width / 2) * PPF} y={-5} width={d.width * PPF} height={10} fill={c.panel} stroke={selected("door", d.id) ? c.focus : c.ink} strokeWidth={2} />
-              <Line points={[(-d.width / 2) * PPF, 0, (d.width / 2) * PPF, 0]} stroke={c["ink-2"]} dash={[4, 3]} listening={false} />
-            </Group>
-          ))}
+          {venue.doors.map((d) => {
+            const w = d.width * PPF;
+            const sel = selected("door", d.id);
+            const stroke = sel ? c.focus : c.ink;
+            const arc = Array.from({ length: 10 }, (_, i) => {
+              const t = (i / 9) * (Math.PI / 2);
+              return [-w / 2 + w * Math.cos(t), w * Math.sin(t)];
+            }).flat();
+            return (
+              <Group key={d.id} x={d.x * PPF} y={d.y * PPF} rotation={d.rotation} {...dragProps({ kind: "door", id: d.id })}>
+                {/* hit area: the opening and its swing */}
+                <Rect x={-w / 2 - 4} y={-8} width={w + 8} height={w + 8} fill="transparent" />
+                {/* gap cut into the wall */}
+                <Rect x={-w / 2} y={-4} width={w} height={8} fill={c.floor} listening={false} />
+                <Line points={[-w / 2, -5, -w / 2, 5]} stroke={stroke} strokeWidth={3} listening={false} />
+                <Line points={[w / 2, -5, w / 2, 5]} stroke={stroke} strokeWidth={3} listening={false} />
+                <Line points={[-w / 2, 0, -w / 2, w]} stroke={stroke} strokeWidth={2} listening={false} />
+                <Line points={arc} stroke={sel ? c.focus : c["ink-2"]} strokeWidth={1} dash={[3, 3]} listening={false} />
+              </Group>
+            );
+          })}
 
           {/* cables, drawn under items */}
           {event && props.showNet && (
@@ -398,12 +421,31 @@ export function FloorPlan(props: FloorPlanProps) {
           })}
 
           {/* room being drawn */}
-          {tool === "room" && props.roomDraft.length > 0 && (
-            <>
-              <Line points={[...props.roomDraft, ...(cursor ? [cursor] : [])].flatMap((p) => [p.x * PPF, p.y * PPF])} stroke={c.focus} strokeWidth={2} dash={[6, 4]} strokeScaleEnabled={false} listening={false} />
-              {props.roomDraft.map((p, i) => <Circle key={i} x={p.x * PPF} y={p.y * PPF} radius={4} fill={c.focus} listening={false} />)}
-            </>
-          )}
+          {tool === "room" && props.roomDraft.length > 0 && (() => {
+            const draft = props.roomDraft;
+            const live = cursor ? [...draft, cursor.point] : draft;
+            const fs = 12 / view.scale;
+            const segments = live.slice(1).map((b, i) => ({ a: live[i]!, b }));
+            return (
+              <>
+                {cursor?.guides.map((g, i) => (
+                  <Line key={`g${i}`} points={[g.from.x * PPF, g.from.y * PPF, g.to.x * PPF, g.to.y * PPF]}
+                    stroke={g.kind === "ortho" ? c.focus : c.net} strokeWidth={1.5} dash={[4, 4]} strokeScaleEnabled={false} listening={false} />
+                ))}
+                <Line points={live.flatMap((p) => [p.x * PPF, p.y * PPF])} stroke={c.focus} strokeWidth={2} strokeScaleEnabled={false} listening={false} />
+                {segments.map(({ a, b }, i) => {
+                  const len = Math.hypot(b.x - a.x, b.y - a.y);
+                  return len < 0.1 ? null : (
+                    <Text key={`l${i}`} text={`${len.toFixed(1)} ft`} x={((a.x + b.x) / 2) * PPF + 6 / view.scale} y={((a.y + b.y) / 2) * PPF - fs - 4 / view.scale}
+                      fontSize={fs} fill={c.ink} listening={false} />
+                  );
+                })}
+                {draft.map((p, i) => <Circle key={i} x={p.x * PPF} y={p.y * PPF} radius={(i === 0 && draft.length >= 3 ? 8 : 4) / view.scale} fill={i === 0 && draft.length >= 3 ? c.panel : c.focus}
+                  stroke={c.focus} strokeWidth={2} strokeScaleEnabled={false} listening={false} />)}
+                {cursor && <Circle x={cursor.point.x * PPF} y={cursor.point.y * PPF} radius={4 / view.scale} fill={c.focus} listening={false} />}
+              </>
+            );
+          })()}
           {/* room vertex handles */}
           {tool === "select" && !event && venue.room.map((p, i) => (
             <Rect key={i} x={p.x * PPF - 5} y={p.y * PPF - 5} width={10} height={10} fill={c.panel} stroke={c.focus} strokeWidth={2}

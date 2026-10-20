@@ -4,6 +4,7 @@ import { VenueDoc, type Circuit, type Point } from "@lpd/shared";
 import { FloorPlan, CIRCUIT_COLORS, type Selection, type Tool } from "../canvas/FloorPlan";
 import { api, uploadUrl } from "../lib/api";
 import { useEditorKeys } from "../lib/keys";
+import { snapToWall } from "../lib/walls";
 import { invalidate } from "../lib/queries";
 import { href } from "../lib/route";
 import { Dialog, NumberField, TextField, newId, toast } from "../lib/ui";
@@ -81,13 +82,24 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
   });
 
   const place = (pt: Point) => {
-    if (tool === "room") return setRoomDraft((r) => [...r, pt]);
+    if (tool === "room") {
+      // Clicking the first corner closes the outline.
+      const first = roomDraft[0];
+      if (first && roomDraft.length >= 3 && Math.hypot(pt.x - first.x, pt.y - first.y) < 1) return finishRoom();
+      return setRoomDraft((r) => [...r, pt]);
+    }
     if (tool === "calibrate") return setCalibration((c) => (c.length >= 2 ? [pt] : [...c, pt]));
     const newIdValue = newId(tool);
+    const wall = tool === "door" ? snapToWall(doc.room, pt, { maxDistFt: 4 }) : tool === "outlet" ? snapToWall(doc.room, pt, { maxDistFt: 2 }) : null;
+    if (tool === "door" && !wall) {
+      toast(doc.room.length < 3 ? "Draw the room first so doors can snap onto its walls." : "Click closer to a wall to place a door.");
+      if (doc.room.length >= 3) return;
+    }
+    const spot = wall?.point ?? pt;
     update((d) => {
-      if (tool === "door") d.doors.push({ id: newIdValue, x: pt.x, y: pt.y, width: 3, rotation: 0 });
+      if (tool === "door") d.doors.push({ id: newIdValue, x: spot.x, y: spot.y, width: 3, rotation: wall?.rotation ?? 0 });
       if (tool === "obstacle") d.obstacles.push({ id: newIdValue, label: "Obstacle", x: pt.x, y: pt.y, width: 3, depth: 3, rotation: 0 });
-      if (tool === "outlet") d.outlets.push({ id: newIdValue, label: "", x: pt.x, y: pt.y, circuitId: paintCircuit, amps: 15 });
+      if (tool === "outlet") d.outlets.push({ id: newIdValue, label: "", x: spot.x, y: spot.y, circuitId: paintCircuit, amps: 15 });
     });
     if (tool === "door" || tool === "obstacle" || tool === "outlet") setSelection({ kind: tool, id: newIdValue });
   };
@@ -106,7 +118,10 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
     update((d) => {
       const list = s.kind === "outlet" ? d.outlets : s.kind === "door" ? d.doors : s.kind === "obstacle" ? d.obstacles : [];
       const item = list.find((x) => x.id === s.id);
-      if (item) Object.assign(item, pt);
+      if (!item) return;
+      const wall = s.kind === "door" ? snapToWall(d.room, pt, { maxDistFt: 4 }) : s.kind === "outlet" ? snapToWall(d.room, pt, { maxDistFt: 2 }) : null;
+      Object.assign(item, wall?.point ?? pt);
+      if (s.kind === "door" && wall) (item as { rotation: number }).rotation = wall.rotation;
     });
 
   const calibrationDistance = calibration.length === 2 ? Math.hypot(calibration[0]!.x - calibration[1]!.x, calibration[0]!.y - calibration[1]!.y) : 0;

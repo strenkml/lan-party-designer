@@ -1,4 +1,5 @@
 import type { EventDoc, VenueDoc } from "@lpd/shared";
+import { CIRCUIT_COLORS } from "../canvas/FloorPlan";
 
 type Tint = "done" | "partial" | "none";
 
@@ -19,6 +20,8 @@ export function SeatMap(props: {
       { x: t.x + t.width / 2 + 2, y: t.y + t.depth / 2 + 2 },
     ]),
     ...event.seats,
+    ...venue.doors,
+    ...venue.outlets,
     ...event.devices,
     ...event.strips,
   ];
@@ -45,6 +48,19 @@ export function SeatMap(props: {
             <text textAnchor="middle" y={0.3} fontSize={0.9} fill="var(--ink)">{o.label}</text>
           </g>
         ))}
+        {venue.doors.map((d) => (
+          <g key={d.id} transform={`translate(${d.x} ${d.y}) rotate(${d.rotation})`}>
+            <rect x={-d.width / 2} y={-0.2} width={d.width} height={0.4} fill="var(--floor)" />
+            <line x1={-d.width / 2} y1={0} x2={-d.width / 2} y2={d.width} stroke="var(--ink)" strokeWidth={0.12} />
+            <path d={`M ${d.width / 2} 0 A ${d.width} ${d.width} 0 0 1 ${-d.width / 2} ${d.width}`} fill="none" stroke="var(--ink-2)" strokeWidth={0.06} strokeDasharray="0.2 0.2" />
+          </g>
+        ))}
+        {venue.outlets.map((o) => {
+          const i = venue.circuits.findIndex((c) => c.id === o.circuitId);
+          return (
+            <circle key={o.id} cx={o.x} cy={o.y} r={0.5} fill={i >= 0 ? CIRCUIT_COLORS[i % CIRCUIT_COLORS.length] : "var(--panel)"} stroke="var(--ink-2)" strokeWidth={0.1} strokeDasharray={i >= 0 ? undefined : "0.2 0.15"} />
+          );
+        })}
         {event.tables.map((t) => (
           <g key={t.id} transform={`translate(${t.x} ${t.y}) rotate(${t.rotation})`}>
             {t.shape === "round" ? (

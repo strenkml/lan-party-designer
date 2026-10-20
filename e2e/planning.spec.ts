@@ -157,3 +157,107 @@ test("setup day checklist tracks progress per seat", async ({ page, request }) =
   await page.getByLabel("Tested at Table 1 A1").check();
   await expect(page.getByText("100% ready")).toBeVisible();
 });
+
+test.describe("venue editor placement", () => {
+  async function openVenue(page: import("@playwright/test").Page, request: APIRequestContext) {
+    const venue = await (await request.post("/api/venues", { data: { name: "Den" } })).json();
+    await page.goto(`/#/venue/${venue.id}`);
+    const canvas = page.locator("canvas").first();
+    await expect(canvas).toBeVisible();
+    const box = (await canvas.boundingBox())!;
+    return { venue, canvas, at: (fx: number, fy: number) => ({ x: box.width * fx, y: box.height * fy }) };
+  }
+  const doc = async (request: APIRequestContext, id: string) => (await (await request.get(`/api/venues/${id}`)).json()).doc;
+
+  test("places an outlet and a door by clicking", async ({ page, request }) => {
+    const { venue, canvas, at } = await openVenue(page, request);
+    await page.getByRole("button", { name: "Outlet", exact: true }).click();
+    await canvas.click({ position: at(0.4, 0.4) });
+    await page.getByRole("button", { name: "Door", exact: true }).click();
+    await canvas.click({ position: at(0.6, 0.5) });
+    await expect.poll(async () => {
+      const d = await doc(request, venue.id);
+      return [d.outlets.length, d.doors.length];
+    }).toEqual([1, 1]);
+  });
+
+  test("draws a room, then places an outlet on its edge and a door", async ({ page, request }) => {
+    const { venue, canvas, at } = await openVenue(page, request);
+    await page.getByRole("button", { name: "Room", exact: true }).click();
+    for (const [x, y] of [[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]] as const) await canvas.click({ position: at(x, y) });
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await doc(request, venue.id)).room.length).toBe(4);
+
+    await page.getByRole("button", { name: "Outlet", exact: true }).click();
+    await canvas.click({ position: at(0.5, 0.3) });
+    await canvas.click({ position: at(0.5, 0.5) });
+    await page.getByRole("button", { name: "Door", exact: true }).click();
+    await canvas.click({ position: at(0.3, 0.5) });
+    await expect.poll(async () => {
+      const d = await doc(request, venue.id);
+      return [d.outlets.length, d.doors.length];
+    }).toEqual([2, 1]);
+  });
+
+  test("places items with slow, human-style mouse input on a drawn room", async ({ page, request }) => {
+    const { venue, canvas, at } = await openVenue(page, request);
+    const box = (await canvas.boundingBox())!;
+    const click = async (fx: number, fy: number) => {
+      await page.mouse.move(box.x + box.width * fx, box.y + box.height * fy, { steps: 6 });
+      await page.mouse.down();
+      await page.waitForTimeout(80);
+      await page.mouse.up();
+      await page.waitForTimeout(450);
+    };
+    await page.getByRole("button", { name: "Room", exact: true }).click();
+    for (const [x, y] of [[0.3, 0.3], [0.7, 0.3], [0.7, 0.7], [0.3, 0.7]] as const) await click(x, y);
+    await click(0.3, 0.3); // close by clicking the first corner
+    await expect.poll(async () => (await doc(request, venue.id)).room.length).toBe(4);
+
+    await page.getByRole("button", { name: "Outlet", exact: true }).click();
+    await click(0.5, 0.3);
+    await click(0.7, 0.5);
+    await page.getByRole("button", { name: "Door", exact: true }).click();
+    await click(0.3, 0.5);
+    await expect.poll(async () => {
+      const d = await doc(request, venue.id);
+      return [d.outlets.length, d.doors.length];
+    }).toEqual([2, 1]);
+    void at;
+  });
+
+  test("a door and an outlet snap onto the nearest wall", async ({ page, request }) => {
+    const { venue, canvas, at } = await openVenue(page, request);
+    await request.put(`/api/venues/${venue.id}`, { data: { doc: { room: [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 16 }, { x: 0, y: 16 }] } } });
+    await page.reload();
+    await expect(canvas).toBeVisible();
+    await page.waitForTimeout(500);
+    const b = (await canvas.boundingBox())!;
+    void at;
+    // room fits the canvas with margin: its top wall sits near 10% of the height, 1 ft below is inside
+    await page.getByRole("button", { name: "Door", exact: true }).click();
+    await page.mouse.click(b.x + b.width * 0.5, b.y + b.height * 0.12);
+    await page.getByRole("button", { name: "Outlet", exact: true }).click();
+    await page.mouse.click(b.x + b.width * 0.3, b.y + b.height * 0.12);
+    await expect.poll(async () => {
+      const d = await doc(request, venue.id);
+      return [d.doors[0]?.y, d.doors[0]?.rotation, d.outlets[0]?.y];
+    }).toEqual([0, 0, 0]);
+  });
+
+  test("places items on a plain http origin where crypto.randomUUID does not exist", async ({ page, request }) => {
+    // Browsers only expose randomUUID on https and localhost. A LAN address like http://10.1.10.25:3000 has none.
+    await page.addInitScript(() => {
+      Object.defineProperty(Crypto.prototype, "randomUUID", { value: undefined, configurable: true });
+    });
+    const { venue, canvas, at } = await openVenue(page, request);
+    await page.getByRole("button", { name: "Obstacle", exact: true }).click();
+    await canvas.click({ position: at(0.5, 0.5) });
+    await page.getByRole("button", { name: "Outlet", exact: true }).click();
+    await canvas.click({ position: at(0.3, 0.3) });
+    await expect.poll(async () => {
+      const d = await doc(request, venue.id);
+      return [d.obstacles.length, d.outlets.length];
+    }).toEqual([1, 1]);
+  });
+});

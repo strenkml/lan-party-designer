@@ -138,7 +138,7 @@ export function TextField(props: { label: string; value: string; onChange: (s: s
   );
 }
 
-export const newId = (prefix: string) => `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
+export { newId } from "./id";
 
 export function formatWatts(w: number) {
   return `${Math.round(w).toLocaleString()} W`;
