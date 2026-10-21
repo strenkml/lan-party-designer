@@ -1,4 +1,4 @@
-import type { DeviceProfile, EventBundle, EventDoc, Person, VenueDoc } from "@lpd/shared";
+import type { DeviceProfile, EventBundle, EventDoc, Person, Preset, PresetBody, VenueDoc } from "@lpd/shared";
 
 export interface VenueRow {
   id: string;
@@ -74,6 +74,10 @@ export const api = {
   createPerson: (p: Omit<Person, "id">) => request<Person>("POST", "/people", p),
   savePerson: (id: string, p: Omit<Person, "id">) => request("PUT", `/people/${id}`, p),
   deletePerson: (id: string) => request("DELETE", `/people/${id}`),
+  presets: () => request<Preset[]>("GET", "/presets"),
+  createPreset: (p: PresetBody) => request<Preset>("POST", "/presets", p),
+  savePreset: (id: string, p: PresetBody) => request("PUT", `/presets/${id}`, p),
+  deletePreset: (id: string) => request("DELETE", `/presets/${id}`),
   profiles: () => request<DeviceProfile[]>("GET", "/profiles"),
   createProfile: (p: Omit<DeviceProfile, "id">) => request<DeviceProfile>("POST", "/profiles", p),
   saveProfile: (id: string, p: Omit<DeviceProfile, "id">) => request("PUT", `/profiles/${id}`, p),

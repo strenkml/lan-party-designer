@@ -23,6 +23,32 @@ describe("planCable", () => {
   });
 });
 
+describe("planCable with a drawn route", () => {
+  it("follows the bend points instead of cutting straight across", () => {
+    // Up 8, across 10, back down 8 is 26 ft of floor: 26 * 1.2 + 6 = 37.2, rounds up to 50
+    const cable = planCable({ x: 0, y: 0 }, { x: 10, y: 0 }, { waypoints: [{ x: 0, y: 8 }, { x: 10, y: 8 }] });
+    expect(cable.estimatedFt).toBeCloseTo(37.2);
+    expect(cable.lengthFt).toBe(50);
+  });
+
+  it("ignores an empty route", () => {
+    expect(planCable({ x: 0, y: 0 }, { x: 10, y: 0 }, { waypoints: [] }).lengthFt).toBe(25);
+  });
+
+  it("uses the real height at each end instead of a flat 3 ft", () => {
+    // 10 ft run with a 1 ft wall outlet and a 3 ft table end: 12 + 1 + 3 = 16
+    const cable = planCable({ x: 0, y: 0 }, { x: 10, y: 0 }, { fromDropFt: 1, toDropFt: 3 });
+    expect(cable.estimatedFt).toBeCloseTo(16);
+    // a high outlet needs more cable: 4 ft up the wall
+    expect(planCable({ x: 0, y: 0 }, { x: 10, y: 0 }, { fromDropFt: 4, toDropFt: 3 }).estimatedFt).toBeCloseTo(19);
+  });
+
+  it("measures each leg of a route along the floor", () => {
+    const cable = planCable({ x: 0, y: 0 }, { x: 6, y: 4 }, { waypoints: [{ x: 6, y: 0 }], fromDropFt: 0, toDropFt: 0 });
+    expect(cable.estimatedFt).toBeCloseTo(12); // 6 across + 4 down = 10 ft, times 1.2
+  });
+});
+
 describe("shoppingList", () => {
   it("groups cables by standard length, longest first, using manual overrides when set", () => {
     const list = shoppingList([

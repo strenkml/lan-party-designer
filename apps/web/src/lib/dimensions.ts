@@ -1,8 +1,19 @@
-import type { Door, Point } from "@lpd/shared";
+import type { Point } from "@lpd/shared";
 import { pointInPolygon, snapToWall } from "./walls";
 
+export type OpeningKind = "door" | "window" | "garage";
+
+/** Anything cut into a wall: a door, a window or a garage door. */
+export interface Opening {
+  x: number;
+  y: number;
+  width: number;
+  /** Defaults to a door. */
+  kind?: OpeningKind;
+}
+
 export interface Span {
-  kind: "wall" | "door";
+  kind: "wall" | OpeningKind;
   lengthFt: number;
   startFt: number;
   endFt: number;
@@ -25,17 +36,17 @@ const clean = (n: number) => Math.round(n * 1e6) / 1e6 + 0;
 const MIN_GAP_FT = 0.05;
 
 /** Each wall split into stretches of plain wall and doors, with lengths in feet. */
-export function wallDimensions(room: Point[], doors: Pick<Door, "x" | "y" | "width">[]): WallDim[] {
+export function wallDimensions(room: Point[], openings: Opening[]): WallDim[] {
   if (room.length < 3) return [];
-  const onWall = new Map<number, { s: number; width: number }[]>();
-  for (const d of doors) {
+  const onWall = new Map<number, { s: number; width: number; kind: OpeningKind }[]>();
+  for (const d of openings) {
     const snap = snapToWall(room, d, { maxDistFt: 0.5 });
     if (!snap) continue;
     const a = room[snap.wallIndex]!;
     const b = room[(snap.wallIndex + 1) % room.length]!;
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     const s = ((d.x - a.x) * (b.x - a.x) + (d.y - a.y) * (b.y - a.y)) / len;
-    onWall.set(snap.wallIndex, [...(onWall.get(snap.wallIndex) ?? []), { s, width: d.width }]);
+    onWall.set(snap.wallIndex, [...(onWall.get(snap.wallIndex) ?? []), { s, width: d.width, kind: d.kind ?? "door" }]);
   }
 
   return room.map((a, index) => {
@@ -61,7 +72,7 @@ export function wallDimensions(room: Point[], doors: Pick<Door, "x" | "y" | "wid
       const start = Math.max(cursor, door.s - door.width / 2);
       const end = Math.min(lengthRaw, door.s + door.width / 2);
       if (start - cursor > MIN_GAP_FT) spans.push(span("wall", cursor, start));
-      spans.push(span("door", start, end));
+      spans.push(span(door.kind, start, end));
       cursor = end;
     }
     if (lengthRaw - cursor > MIN_GAP_FT) spans.push(span("wall", cursor, lengthRaw));

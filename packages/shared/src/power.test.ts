@@ -69,7 +69,7 @@ describe("computePowerLoad", () => {
 
   it("reports load behind an unknown breaker as unverified instead of attributing it to a circuit", () => {
     const report = computePowerLoad({
-      venue: venue({ outlets: [{ id: "o1", x: 0, y: 0, circuitId: null, amps: 15, label: "", sockets: 2 }] }),
+      venue: venue({ outlets: [{ id: "o1", x: 0, y: 0, circuitId: null, amps: 15, label: "", sockets: 2, heightIn: 12 }] }),
       event: event(),
       people: [person("ann")],
       profiles,
@@ -189,7 +189,7 @@ describe("computePowerLoad", () => {
     it("allows as many things as the outlet has sockets and flags one more", () => {
       const three = [strip("st1", plug), strip("st2", plug), strip("st3", plug)];
       const full = computePowerLoad({
-        venue: venue({ outlets: [{ id: "o1", x: 0, y: 0, circuitId: "c1", amps: 15, label: "", sockets: 3 }] }),
+        venue: venue({ outlets: [{ id: "o1", x: 0, y: 0, circuitId: "c1", amps: 15, label: "", sockets: 3, heightIn: 12 }] }),
         event: event({ strips: three, seats: [], attendance: [] } as never),
         people: [],
         profiles,
@@ -224,7 +224,7 @@ describe("computePowerLoad", () => {
 
     it("sums the load of everything sharing the outlet", () => {
       const report = computePowerLoad({
-        venue: venue({ outlets: [{ id: "o1", x: 0, y: 0, circuitId: "c1", amps: 15, label: "", sockets: 4 }] }),
+        venue: venue({ outlets: [{ id: "o1", x: 0, y: 0, circuitId: "c1", amps: 15, label: "", sockets: 4, heightIn: 12 }] }),
         event: event({
           strips: [strip("st1", plug), strip("st2", plug)],
           seats: [{ id: "s1", x: 0, y: 0, stripId: "st1" }, { id: "s2", x: 0, y: 0, stripId: "st2" }],

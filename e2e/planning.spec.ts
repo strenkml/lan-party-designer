@@ -279,6 +279,57 @@ test.describe("venue editor placement", () => {
     }).toEqual([true, true]);
   });
 
+  test("windows and garage doors snap onto walls and can be resized", async ({ page, request }) => {
+    const { venue, canvas } = await openVenue(page, request);
+    await request.put(`/api/venues/${venue.id}`, { data: { doc: { room: [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 16 }, { x: 0, y: 16 }] } } });
+    await page.reload();
+    await page.waitForTimeout(500);
+    const b = (await canvas.boundingBox())!;
+    await page.getByRole("button", { name: "Window", exact: true }).click();
+    await page.mouse.click(b.x + b.width * 0.2, b.y + b.height * 0.12);
+    await page.getByRole("button", { name: "Garage", exact: true }).click();
+    await page.mouse.click(b.x + b.width * 0.45, b.y + b.height * 0.12);
+    await page.getByRole("button", { name: "Double (16 ft)" }).click();
+    await expect.poll(async () => {
+      const d = await doc(request, venue.id);
+      return [d.windows[0]?.y, d.windows[0]?.width, d.garageDoors[0]?.y, d.garageDoors[0]?.width];
+    }).toEqual([0, 4, 0, 16]);
+  });
+
+  test("a network jack snaps to a wall, and a router can uplink to it for the shopping list", async ({ page, request }) => {
+    const { venue, canvas } = await openVenue(page, request);
+    await request.put(`/api/venues/${venue.id}`, { data: { doc: { room: [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 16 }, { x: 0, y: 16 }] } } });
+    await page.reload();
+    await page.waitForTimeout(500);
+    const b = (await canvas.boundingBox())!;
+    await page.getByRole("button", { name: "Net jack", exact: true }).click();
+    await page.mouse.click(b.x + b.width * 0.3, b.y + b.height * 0.12);
+    await page.getByLabel("Label").fill("Router closet jack");
+    await expect.poll(async () => {
+      const j = (await doc(request, venue.id)).jacks[0];
+      return [j?.label, j?.y];
+    }).toEqual(["Router closet jack", 0]);
+
+    // now an event in this venue with a router pointed at the jack
+    const event = await (await request.post("/api/events", { data: { name: "Jack LAN", venueId: venue.id } })).json();
+    await request.put(`/api/events/${event.id}`, { data: { doc: {
+      devices: [{ id: "rt", label: "Router", profileId: "router", x: 10, y: 0, jackId: (await doc(request, venue.id)).jacks[0].id }],
+    } } });
+    await page.goto(`/#/event/${event.id}/reports`);
+    await expect(page.getByText(/Ethernet cable, \d+ ft/)).toBeVisible();
+    await page.getByText(/Ethernet runs \(1\)/).click();
+    await expect(page.getByRole("cell", { name: "Router closet jack" })).toBeVisible();
+  });
+
+  test("an outlet has a height off the floor", async ({ page, request }) => {
+    const { venue, canvas, at } = await openVenue(page, request);
+    await page.getByRole("button", { name: "Outlet", exact: true }).click();
+    await canvas.click({ position: at(0.5, 0.5) });
+    await expect(page.getByLabel("Height off the floor (in)")).toHaveValue("12");
+    await page.getByLabel("Height off the floor (in)").fill("42");
+    await expect.poll(async () => (await doc(request, venue.id)).outlets[0]?.heightIn).toBe(42);
+  });
+
   test("an outlet can have more than two plugs", async ({ page, request }) => {
     const { venue, canvas, at } = await openVenue(page, request);
     await page.getByRole("button", { name: "Outlet", exact: true }).click();
@@ -336,5 +387,185 @@ test("auto-wire also wires seats that have no guest", async ({ page, request }) 
     const seat = (await (await request.get(`/api/events/${event.id}`)).json()).doc.seats[0];
     return [seat.stripId, seat.netDeviceId, seat.netPort];
   }).toEqual(["st1", "sw1", 0]);
+});
+
+test("a custom table and strip can be saved, placed by name and managed", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await request.post("/api/presets", { data: { kind: "table", name: "Kitchen island", spec: { shape: "rect", width: 7, depth: 3, seats: 3, seatSides: "far" } } });
+  await request.post("/api/presets", { data: { kind: "strip", name: "Orange cube", spec: { sockets: 3, amps: 10 } } });
+  await request.put(`/api/events/${event.id}`, { data: { doc: {} } });
+  await page.goto(`/#/event/${event.id}/plan`);
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  const box = (await canvas.boundingBox())!;
+
+  await page.getByRole("button", { name: "Table", exact: true }).click();
+  await page.getByLabel("Table to place").selectOption({ label: "Kitchen island" });
+  await canvas.click({ position: { x: box.width * 0.5, y: box.height * 0.5 } });
+  await page.getByRole("button", { name: "Strip", exact: true }).click();
+  await page.getByLabel("Power strip to place").selectOption({ label: "Orange cube" });
+  await canvas.click({ position: { x: box.width * 0.3, y: box.height * 0.3 } });
+
+  await expect.poll(async () => {
+    const doc = (await (await request.get(`/api/events/${event.id}`)).json()).doc;
+    return [doc.tables[0]?.label, doc.tables[0]?.seats, doc.seats.length, doc.strips[0]?.label, doc.strips[0]?.sockets, doc.strips[0]?.amps];
+  }).toEqual(["Kitchen island", 3, 3, "Orange cube", 3, 10]);
+
+  // save the placed strip under a new name, then see it listed on the People & devices page
+  await page.getByRole("button", { name: "Save as a custom strip…" }).click();
+  await page.getByRole("dialog").getByLabel("Name").fill("Orange cube mk2");
+  await page.getByRole("button", { name: "Save strip" }).click();
+  await page.getByRole("link", { name: "People & devices" }).click();
+  const row = page.getByRole("listitem").filter({ hasText: "Orange cube mk2" });
+  await expect(row).toBeVisible();
+  page.once("dialog", (d) => d.accept());
+  await row.getByRole("button", { name: "Delete" }).click();
+  await expect(row).toHaveCount(0);
+});
+
+test("power strips and switches can be rotated", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await request.put(`/api/events/${event.id}`, { data: { doc: {
+    strips: [{ id: "st1", label: "Strip 1", x: 12, y: 8, pluggedInto: { kind: "outlet", id: "o1" } }],
+    devices: [{ id: "sw1", label: "Switch 1", profileId: "switch-16", x: 16, y: 8 }],
+  } } });
+  await page.goto(`/#/event/${event.id}/plan`);
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  await page.waitForTimeout(500);
+  const box = (await canvas.boundingBox())!;
+  // click the strip, then the switch; the fit puts the 24 x 16 ft room in the left part of the canvas
+  const ft = (x: number, y: number) => ({ x: box.width * (0.078 + (x / 24) * 0.625), y: box.height * (0.1 + (y / 16) * 0.5) });
+  await canvas.click({ position: ft(12, 8) });
+  await page.getByRole("button", { name: "Rotate 90°" }).click();
+  await expect.poll(async () => (await (await request.get(`/api/events/${event.id}`)).json()).doc.strips[0].rotation).toBe(90);
+  await canvas.click({ position: ft(16, 8) });
+  await page.getByRole("button", { name: "Rotate 90°" }).click();
+  await page.getByRole("button", { name: "Rotate 90°" }).click();
+  await expect.poll(async () => (await (await request.get(`/api/events/${event.id}`)).json()).doc.devices[0].rotation).toBe(180);
+});
+
+test("a cable can be selected and routed around the room with bends", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await request.put(`/api/events/${event.id}`, { data: { doc: {
+    tables: [{ id: "t1", label: "Table 1", x: 8, y: 9, width: 6, depth: 2.5, seats: 1 }],
+    seats: [{ id: "t1-a0", tableId: "t1", x: 12, y: 6, netDeviceId: "sw1", netPort: 0 }],
+    devices: [{ id: "sw1", label: "Switch 1", profileId: "switch-16", x: 4, y: 6 }],
+  } } });
+  await page.goto(`/#/event/${event.id}/plan`);
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  await page.waitForTimeout(900);
+  const box = (await canvas.boundingBox())!;
+  const ft = (x: number, y: number) => ({ x: box.width * (0.078 + (x / 24) * 0.625), y: box.height * (0.1035 + (y / 16) * 0.502) });
+  const routes = async () => (await (await request.get(`/api/events/${event.id}`)).json()).doc.routes;
+
+  await canvas.click({ position: ft(8, 6) }); // on the straight cable between the seat and the switch
+  await expect(page.getByRole("heading", { name: "Ethernet cable" })).toBeVisible();
+  await expect(page.getByText("Straight across the floor.")).toBeVisible();
+  await page.getByRole("button", { name: "Add a bend" }).click();
+  await expect.poll(async () => (await routes())["eth:t1-a0"]?.length).toBe(1);
+  await expect(page.getByText("1 bend.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Clear route" }).click();
+  await expect.poll(async () => Object.keys(await routes())).toEqual([]);
+});
+
+test("zones can be placed and a table in a walkway raises a warning", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await request.put(`/api/events/${event.id}`, { data: { doc: {
+    tables: [{ id: "t1", label: "Table 1", x: 12, y: 8, width: 6, depth: 2.5, seats: 1 }],
+    seats: [{ id: "t1-a0", tableId: "t1", x: 12, y: 6 }],
+  } } });
+  await page.goto(`/#/event/${event.id}/plan`);
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  await page.waitForTimeout(900);
+  const box = (await canvas.boundingBox())!;
+  const ft = (x: number, y: number) => ({ x: box.width * (0.078 + (x / 24) * 0.625), y: box.height * (0.1035 + (y / 16) * 0.502) });
+
+  await page.getByRole("button", { name: "Zone", exact: true }).click();
+  await page.getByLabel("Kind of zone").selectOption("walkway");
+  await canvas.click({ position: ft(12, 8) }); // lands on the table
+  await expect.poll(async () => (await (await request.get(`/api/events/${event.id}`)).json()).doc.zones.map((z: { kind: string }) => z.kind)).toEqual(["walkway"]);
+  await expect(page.getByText("Table 1 is in the way of Walkway")).toBeVisible();
+
+  await page.getByLabel("Kind").selectOption("food");
+  await expect(page.getByText("is in the way of")).toHaveCount(0);
+  await expect.poll(async () => (await (await request.get(`/api/events/${event.id}`)).json()).doc.zones[0].kind).toBe("food");
+});
+
+test("dragging a table snaps it flush against another table", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await request.put(`/api/events/${event.id}`, { data: { doc: {
+    tables: [
+      { id: "ta", label: "A", x: 8, y: 9, width: 6, depth: 2.5, seats: 1, seatSides: "far" },
+      { id: "tb", label: "B", x: 18, y: 9, width: 6, depth: 2.5, seats: 1, seatSides: "far" },
+    ],
+  } } });
+  await page.goto(`/#/event/${event.id}/plan`);
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  await page.waitForTimeout(900);
+  const box = (await canvas.boundingBox())!;
+  const pxPerFt = (box.width * 0.625) / 24;
+  const at = (x: number, y: number) => ({ x: box.x + box.width * (0.078 + (x / 24) * 0.625), y: box.y + box.height * (0.1035 + (y / 16) * 0.502) });
+
+  // pick B up in its middle and set it down so its left edge is about 0.3 ft off A's right edge (at x = 11)
+  const from = at(18, 9);
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x - 3.7 * pxPerFt, from.y, { steps: 12 });
+  await page.mouse.move(from.x - 3.7 * pxPerFt - 0.3 * pxPerFt, from.y, { steps: 3 });
+  await page.mouse.up();
+
+  await expect.poll(async () => {
+    const t = (await (await request.get(`/api/events/${event.id}`)).json()).doc.tables.find((x: { id: string }) => x.id === "tb");
+    return Math.round(t.x * 100) / 100;
+  }).toBe(14);
+});
+
+test("shift-click objects, group them, and they move together", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await request.put(`/api/events/${event.id}`, { data: { doc: {
+    tables: [{ id: "ta", label: "Pod table", x: 8, y: 9, width: 6, depth: 2.5, seats: 1, seatSides: "far" }],
+    seats: [{ id: "ta-a0", tableId: "ta", x: 8, y: 7.4 }],
+    strips: [{ id: "st1", label: "Pod strip", x: 15, y: 9, pluggedInto: { kind: "outlet", id: "o1" } }],
+  } } });
+  await page.goto(`/#/event/${event.id}/plan`);
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  await page.waitForTimeout(900);
+  const box = (await canvas.boundingBox())!;
+  const pxPerFt = (box.width * 0.625) / 24;
+  const ft = (x: number, y: number) => ({ x: box.width * (0.078 + (x / 24) * 0.625), y: box.height * (0.1035 + (y / 16) * 0.502) });
+  const doc = async () => (await (await request.get(`/api/events/${event.id}`)).json()).doc;
+
+  await canvas.click({ position: ft(8, 9) });
+  await page.keyboard.down("Shift");
+  await canvas.click({ position: ft(15, 9) });
+  await page.keyboard.up("Shift");
+  await expect(page.getByText("2 objects selected")).toBeVisible();
+  await page.getByRole("button", { name: "Group these objects" }).click();
+  await expect.poll(async () => (await doc()).groups.length).toBe(1);
+
+  // the group is selected when one member is clicked
+  await canvas.click({ position: ft(8, 9) });
+  await expect(page.getByText("2 objects move together")).toBeVisible();
+  await page.getByLabel("Group name").fill("Pod A");
+
+  // drag the table 3 ft to the right; the strip should follow by the same amount
+  const from = ft(8, 9);
+  await page.mouse.move(box.x + from.x, box.y + from.y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + from.x + 3 * pxPerFt, box.y + from.y, { steps: 10 });
+  await page.mouse.up();
+  await expect.poll(async () => {
+    const d = await doc();
+    return [d.tables[0].x - 8 > 1, d.strips[0].x - 15 === d.tables[0].x - 8, d.seats[0].x - 8 === d.tables[0].x - 8, d.groups[0].label];
+  }).toEqual([true, true, true, "Pod A"]);
+
+  await page.getByRole("button", { name: "Ungroup" }).click();
+  await expect.poll(async () => (await doc()).groups.length).toBe(0);
 });
 

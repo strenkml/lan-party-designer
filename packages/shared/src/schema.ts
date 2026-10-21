@@ -68,6 +68,8 @@ export const Outlet = z.object({
   amps: z.number().positive().default(15),
   /** Plugs on this outlet. A standard duplex has 2. */
   sockets: z.number().int().positive().default(2),
+  /** Height of the outlet above the floor, in inches. Cables drop this far at the wall end. */
+  heightIn: z.number().nonnegative().default(12),
 });
 export type Outlet = z.infer<typeof Outlet>;
 
@@ -83,6 +85,38 @@ export const Door = z.object({
   flipHinge: z.boolean().default(false),
 });
 export type Door = z.infer<typeof Door>;
+
+/** An ethernet wall plate. A switch or router can uplink to it. */
+export const NetworkJack = z.object({
+  id: Id,
+  label: z.string().default(""),
+  x: z.number(),
+  y: z.number(),
+  rotation: z.number().default(0),
+  /** Height above the floor, in inches. */
+  heightIn: z.number().nonnegative().default(12),
+});
+export type NetworkJack = z.infer<typeof NetworkJack>;
+
+/** Cut into a wall like a door, but it does not swing. */
+export const WallWindow = z.object({
+  id: Id,
+  x: z.number(),
+  y: z.number(),
+  width: z.number().positive().default(4),
+  rotation: z.number().default(0),
+});
+export type WallWindow = z.infer<typeof WallWindow>;
+
+export const GarageDoor = z.object({
+  id: Id,
+  x: z.number(),
+  y: z.number(),
+  /** 9 ft is a single car door, 16 ft a double. */
+  width: z.number().positive().default(9),
+  rotation: z.number().default(0),
+});
+export type GarageDoor = z.infer<typeof GarageDoor>;
 
 export const Obstacle = z.object({
   id: Id,
@@ -109,8 +143,11 @@ export type Background = z.infer<typeof Background>;
 export const VenueDoc = z.object({
   room: z.array(Point).default([]),
   doors: z.array(Door).default([]),
+  windows: z.array(WallWindow).default([]),
+  garageDoors: z.array(GarageDoor).default([]),
   obstacles: z.array(Obstacle).default([]),
   outlets: z.array(Outlet).default([]),
+  jacks: z.array(NetworkJack).default([]),
   circuits: z.array(Circuit).default([]),
   background: Background.nullable().default(null),
 });
@@ -165,6 +202,7 @@ export const Strip = z.object({
   y: z.number(),
   sockets: z.number().int().positive().default(6),
   amps: z.number().positive().default(15),
+  rotation: z.number().default(0),
   pluggedInto: PluggedInto.nullable().default(null),
 });
 export type Strip = z.infer<typeof Strip>;
@@ -190,6 +228,9 @@ export const InfraDevice = z.object({
   peakW: z.number().nonnegative().optional(),
   /** Overrides the profile's port count. */
   ports: z.number().int().nonnegative().optional(),
+  rotation: z.number().default(0),
+  /** Wall jack this device uplinks to, if any. */
+  jackId: Id.nullable().default(null),
   pluggedInto: PluggedInto.nullable().default(null),
 });
 export type InfraDevice = z.infer<typeof InfraDevice>;
@@ -212,6 +253,36 @@ export const Attendance = z.object({
 });
 export type Attendance = z.infer<typeof Attendance>;
 
+export const ZoneKind = z.enum(["walkway", "food", "storage", "stage", "other"]);
+export type ZoneKind = z.infer<typeof ZoneKind>;
+
+/** A marked-out area of the room, like a walkway to keep clear or a food table. */
+export const Zone = z.object({
+  id: Id,
+  label: z.string().default(""),
+  kind: ZoneKind.default("other"),
+  x: z.number(),
+  y: z.number(),
+  width: z.number().positive(),
+  depth: z.number().positive(),
+  rotation: z.number().default(0),
+});
+export type Zone = z.infer<typeof Zone>;
+
+export const GroupMember = z.object({
+  kind: z.enum(["table", "strip", "device", "zone"]),
+  id: Id,
+});
+export type GroupMember = z.infer<typeof GroupMember>;
+
+/** Objects that move together, like a table with its power strip and switch. */
+export const ObjectGroup = z.object({
+  id: Id,
+  label: z.string().default(""),
+  members: z.array(GroupMember).default([]),
+});
+export type ObjectGroup = z.infer<typeof ObjectGroup>;
+
 export const ChecklistItem = z.object({
   power: z.boolean().default(false),
   ethernet: z.boolean().default(false),
@@ -229,6 +300,8 @@ export type EventSettings = z.infer<typeof EventSettings>;
 
 export const EventDoc = z.object({
   tables: z.array(Table).default([]),
+  zones: z.array(Zone).default([]),
+  groups: z.array(ObjectGroup).default([]),
   seats: z.array(Seat).default([]),
   strips: z.array(Strip).default([]),
   cords: z.array(Cord).default([]),
@@ -236,6 +309,8 @@ export const EventDoc = z.object({
   uplinks: z.array(Uplink).default([]),
   attendance: z.array(Attendance).default([]),
   checklist: z.record(z.string(), ChecklistItem).default({}),
+  /** Bend points for hand-routed cables, keyed like "eth:<seat id>" or "pwr:strip:<strip id>". */
+  routes: z.record(z.string(), z.array(Point)).default({}),
   settings: EventSettings.default(EventSettings.parse({})),
 });
 export type EventDoc = z.infer<typeof EventDoc>;

@@ -1,20 +1,31 @@
 import { useMemo, useState } from "react";
-import { autoWire, type Level, type Point } from "@lpd/shared";
+import { BUILTIN_STRIP_PRESETS, autoWire, layoutWarnings, type GroupMember, type Level, type Point, type ZoneKind } from "@lpd/shared";
 import { FloorPlan, type Selection, type Tool } from "../canvas/FloorPlan";
 import { useEditorKeys } from "../lib/keys";
+import { usePresets } from "../lib/queries";
+import { boxAround, snapBox, type Box } from "../lib/snapping";
 import { Gauge, newId, toast } from "../lib/ui";
 import { Icons } from "../panels/Icons";
-import { TABLE_PRESETS, addTable, assignSeat, moveTable, removeCord, removeDevice, removeStrip, removeTable, seatName, shortName } from "../store/eventOps";
+import { TABLE_PRESETS, addTable, assignSeat, groupObjects, groupOf, moveTable, removeCord, removeDevice, removeStrip, removeTable, removeZone, seatName, shortName, translateObjects } from "../store/eventOps";
 import { useEventDoc } from "../store/eventStore";
 import { useEventCtx } from "./eventContext";
-import { CordsPanel, EventInspector } from "./EventInspector";
+import { CordsPanel, EventInspector, GroupInspector, MultiInspector } from "./EventInspector";
 
 const TOOLS: { tool: Tool; label: string }[] = [
   { tool: "select", label: "Select" },
   { tool: "table", label: "Table" },
   { tool: "strip", label: "Strip" },
   { tool: "device", label: "Switch" },
+  { tool: "zone", label: "Zone" },
 ];
+
+const ZONE_PRESETS: Record<ZoneKind, { label: string; width: number; depth: number }> = {
+  walkway: { label: "Walkway", width: 4, depth: 12 },
+  food: { label: "Food table", width: 8, depth: 3 },
+  storage: { label: "Storage", width: 4, depth: 4 },
+  stage: { label: "Stage", width: 12, depth: 8 },
+  other: { label: "Zone", width: 6, depth: 6 },
+};
 
 export function PlanTab() {
   const { venue, doc, people, profiles, report, seatLabels } = useEventCtx();
@@ -23,13 +34,22 @@ export function PlanTab() {
   const canRedo = useEventDoc((s) => s.future.length > 0);
 
   const [tool, setTool] = useState<Tool>("select");
-  const [selection, setSelection] = useState<Selection | null>(null);
+  const [selection, setSelectionRaw] = useState<Selection | null>(null);
+  /** Objects picked with shift-click. Two or more can be grouped. */
+  const [picked, setPicked] = useState<Selection[]>([]);
+  const setSelection = (s: Selection | null) => { setSelectionRaw(s); setPicked([]); };
   const [snap, setSnap] = useState(true);
   const [showPower, setShowPower] = useState(true);
   const [showNet, setShowNet] = useState(true);
   const [showDimensions, setShowDimensions] = useState(false);
+  const [snapObjects, setSnapObjects] = useState(true);
   const [preset, setPreset] = useState("folding-6");
   const [profileId, setProfileId] = useState("switch-16");
+  const [stripPreset, setStripPreset] = useState("strip-6");
+  const [zoneKind, setZoneKind] = useState<ZoneKind>("walkway");
+  const customPresets = usePresets().data ?? [];
+  const customTables = customPresets.filter((p) => p.kind === "table");
+  const customStrips = customPresets.filter((p) => p.kind === "strip");
   const [unplaced, setUnplaced] = useState<{ seatId: string; kind: string; reason: string }[]>([]);
 
   const levels = useMemo(() => {
@@ -38,15 +58,48 @@ export function PlanTab() {
     return out;
   }, [report]);
 
+  const GROUPABLE = ["table", "strip", "device", "zone"];
+  const asMember = (s: Selection): GroupMember | null => (GROUPABLE.includes(s.kind) ? ({ kind: s.kind, id: s.id } as GroupMember) : null);
+  const groupedWith = (s: Selection | null) => {
+    const g = s && asMember(s) ? groupOf(doc, s.kind as GroupMember["kind"], s.id) : undefined;
+    return g;
+  };
+  const selectedGroup = picked.length < 2 ? groupedWith(selection) : undefined;
+  /** What moves when the selection is dragged: the picked objects, or the whole group. */
+  const movingSet = (s: Selection): GroupMember[] => {
+    const inPicked = picked.some((p) => p.kind === s.kind && p.id === s.id);
+    if (inPicked && picked.length >= 2) return picked.map(asMember).filter((m): m is GroupMember => !!m);
+    return groupedWith(s)?.members ?? [];
+  };
+  const highlight: Selection[] = picked.length >= 2
+    ? picked
+    : selection
+      ? [selection, ...(selectedGroup?.members ?? []).map((m) => ({ kind: m.kind, id: m.id }) as Selection)]
+      : [];
+  const toggleSelect = (s: Selection) => {
+    const base = picked.length ? picked : selection ? [selection] : [];
+    const has = base.some((p) => p.kind === s.kind && p.id === s.id);
+    const next = has ? base.filter((p) => !(p.kind === s.kind && p.id === s.id)) : [...base, s];
+    setPicked(next);
+    setSelectionRaw(next[next.length - 1] ?? null);
+  };
+
+  const layout = useMemo(() => layoutWarnings(venue, doc), [venue, doc]);
+  const allWarnings = useMemo(() => [...report.warnings, ...layout], [report.warnings, layout]);
   const clear = () => setSelection(null);
 
   const remove = () => {
-    if (!selection) return;
+    const targets = picked.length >= 2 ? picked : selection ? [selection] : [];
+    if (targets.length === 0) return;
     update((d) => {
-      if (selection.kind === "table") removeTable(d, selection.id);
-      if (selection.kind === "strip") removeStrip(d, selection.id);
-      if (selection.kind === "device") removeDevice(d, selection.id);
-      if (selection.kind === "cord") removeCord(d, selection.id);
+      for (const t of targets) {
+        if (t.kind === "table") removeTable(d, t.id);
+        if (t.kind === "strip") removeStrip(d, t.id);
+        if (t.kind === "device") removeDevice(d, t.id);
+        if (t.kind === "cord") removeCord(d, t.id);
+        if (t.kind === "cable") delete d.routes[t.id];
+        if (t.kind === "zone") removeZone(d, t.id);
+      }
     });
     clear();
   };
@@ -59,15 +112,60 @@ export function PlanTab() {
     enter: () => {},
   });
 
+  /** Lines a dragged item up with the other objects and the room edges. */
+  const snapToObjects = (sel: Selection, pt: Point, bypass: boolean) => {
+    if (!snapObjects || bypass) return null;
+    const dims = {
+      table: (id: string) => { const t = doc.tables.find((x) => x.id === id); return t && { width: t.width, depth: t.shape === "round" ? t.width : t.depth, rotation: t.rotation }; },
+      strip: (id: string) => { const t = doc.strips.find((x) => x.id === id); return t && { width: 2.4, depth: 0.8, rotation: t.rotation }; },
+      device: (id: string) => { const t = doc.devices.find((x) => x.id === id); return t && { width: 3.2, depth: 1.1, rotation: t.rotation }; },
+      zone: (id: string) => { const t = doc.zones.find((x) => x.id === id); return t && { width: t.width, depth: t.depth, rotation: t.rotation }; },
+      seat: (id: string) => { const t = doc.seats.find((x) => x.id === id); return t && { width: 1.4, depth: 1.4, rotation: t.rotation }; },
+    } as const;
+    const getDims = (dims as Record<string, ((id: string) => { width: number; depth: number; rotation: number } | undefined) | undefined>)[sel.kind];
+    const d = getDims?.(sel.id);
+    if (!d) return null;
+    const moving = boxAround({ ...pt, ...d });
+    const together = movingSet(sel);
+    const isMoving = (kind: GroupMember["kind"], id: string) => together.some((m) => m.kind === kind && m.id === id);
+    const others: Box[] = [];
+    const push = (x: number, y: number, width: number, depth: number, rotation: number) => others.push(boxAround({ x, y, width, depth, rotation }));
+    for (const t of doc.tables) if (!(sel.kind === "table" && t.id === sel.id) && !isMoving("table", t.id)) push(t.x, t.y, t.width, t.shape === "round" ? t.width : t.depth, t.rotation);
+    for (const z of doc.zones) if (!(sel.kind === "zone" && z.id === sel.id) && !isMoving("zone", z.id)) push(z.x, z.y, z.width, z.depth, z.rotation);
+    for (const s of doc.strips) if (!(sel.kind === "strip" && s.id === sel.id) && !isMoving("strip", s.id)) push(s.x, s.y, 2.4, 0.8, s.rotation);
+    for (const v of doc.devices) if (!(sel.kind === "device" && v.id === sel.id) && !isMoving("device", v.id)) push(v.x, v.y, 3.2, 1.1, v.rotation);
+    for (const s of doc.seats) if (!(sel.kind === "seat" && s.id === sel.id) && !(s.tableId && isMoving("table", s.tableId))) push(s.x, s.y, 1.4, 1.4, s.rotation);
+    for (const o of venue.obstacles) push(o.x, o.y, o.width, o.depth, o.rotation);
+    if (venue.room.length >= 3) {
+      others.push({
+        minX: Math.min(...venue.room.map((p) => p.x)), maxX: Math.max(...venue.room.map((p) => p.x)),
+        minY: Math.min(...venue.room.map((p) => p.y)), maxY: Math.max(...venue.room.map((p) => p.y)),
+      });
+    }
+    const r = snapBox(moving, others, { thresholdFt: 0.6 });
+    return { pt: { x: pt.x + r.dx, y: pt.y + r.dy }, guides: r.guides };
+  };
+
   const place = (pt: Point) => {
     const id = newId(tool === "device" ? "dev" : tool);
-    if (tool === "table") update((d) => addTable(d, preset, pt, id));
-    if (tool === "strip") update((d) => void d.strips.push({ id, label: `Strip ${d.strips.length + 1}`, x: pt.x, y: pt.y, sockets: 6, amps: 15, pluggedInto: null }));
+    if (tool === "table") {
+      const custom = customTables.find((p) => `custom:${p.id}` === preset);
+      update((d) => addTable(d, custom && custom.kind === "table" ? { ...custom.spec, name: custom.name } : preset, pt, id));
+    }
+    if (tool === "strip") {
+      const custom = customStrips.find((p) => `custom:${p.id}` === stripPreset);
+      const spec = custom && custom.kind === "strip" ? custom.spec : (BUILTIN_STRIP_PRESETS.find((p) => p.id === stripPreset)?.spec ?? { sockets: 6, amps: 15 });
+      update((d) => void d.strips.push({ id, label: custom?.name ?? `Strip ${d.strips.length + 1}`, x: pt.x, y: pt.y, sockets: spec.sockets, amps: spec.amps, rotation: 0, pluggedInto: null }));
+    }
     if (tool === "device") {
       const p = profiles.find((x) => x.id === profileId);
-      update((d) => void d.devices.push({ id, label: `${p?.kind === "router" ? "Router" : "Switch"} ${d.devices.length + 1}`, profileId, x: pt.x, y: pt.y, pluggedInto: null }));
+      update((d) => void d.devices.push({ id, label: `${p?.kind === "router" ? "Router" : "Switch"} ${d.devices.length + 1}`, profileId, x: pt.x, y: pt.y, rotation: 0, jackId: null, pluggedInto: null }));
     }
-    if (tool === "table" || tool === "strip" || tool === "device") {
+    if (tool === "zone") {
+      const size = ZONE_PRESETS[zoneKind];
+      update((d) => void d.zones.push({ id, label: size.label, kind: zoneKind, x: pt.x, y: pt.y, width: size.width, depth: size.depth, rotation: 0 }));
+    }
+    if (tool === "table" || tool === "strip" || tool === "device" || tool === "zone") {
       setSelection({ kind: tool === "device" ? "device" : tool, id });
       setTool("select");
     }
@@ -75,12 +173,18 @@ export function PlanTab() {
 
   const onDragEnd = (s: Selection, pt: Point) =>
     update((d) => {
+      const members = movingSet(s);
+      if (members.length >= 2) {
+        const cur = s.kind === "table" ? d.tables.find((x) => x.id === s.id) : s.kind === "strip" ? d.strips.find((x) => x.id === s.id) : s.kind === "device" ? d.devices.find((x) => x.id === s.id) : s.kind === "zone" ? d.zones.find((x) => x.id === s.id) : undefined;
+        if (cur) return translateObjects(d, members, pt.x - cur.x, pt.y - cur.y);
+      }
       if (s.kind === "table") return moveTable(d, s.id, pt);
       if (s.kind === "seat") {
         const seat = d.seats.find((x) => x.id === s.id);
         if (seat) Object.assign(seat, pt, { manual: true });
       }
       if (s.kind === "strip") Object.assign(d.strips.find((x) => x.id === s.id) ?? {}, pt);
+      if (s.kind === "zone") Object.assign(d.zones.find((x) => x.id === s.id) ?? {}, pt);
       if (s.kind === "device") Object.assign(d.devices.find((x) => x.id === s.id) ?? {}, pt);
     });
 
@@ -104,6 +208,8 @@ export function PlanTab() {
 
   const guests = doc.attendance.filter((a) => a.rsvp !== "declined");
   const warnTarget = (refId: string): Selection | null => {
+    if (doc.tables.some((s) => s.id === refId)) return { kind: "table", id: refId };
+    if (doc.devices.some((s) => s.id === refId)) return { kind: "device", id: refId };
     if (doc.strips.some((s) => s.id === refId)) return { kind: "strip", id: refId };
     if (doc.seats.some((s) => s.id === refId)) return { kind: "seat", id: refId };
     if (venue.outlets.some((s) => s.id === refId)) return { kind: "outlet", id: refId };
@@ -115,7 +221,7 @@ export function PlanTab() {
       <div className="rail no-print" role="toolbar" aria-label="Tools">
         {TOOLS.map((t) => (
           <button key={t.tool} className="btn" aria-pressed={tool === t.tool} title={t.label} onClick={() => setTool(t.tool)}>
-            {Icons[t.tool === "device" ? "device" : (t.tool as "select" | "table" | "strip")]}
+            {Icons[t.tool === "device" ? "device" : (t.tool as "select" | "table" | "strip" | "zone")]}
             {t.label}
           </button>
         ))}
@@ -140,6 +246,10 @@ export function PlanTab() {
             seatLabels={seatLabels}
             seatTint={{}}
             onSelect={setSelection}
+            highlight={highlight}
+            onToggleSelect={toggleSelect}
+            snapToObjects={snapToObjects}
+            onRouteChange={(key, points) => update((d) => { if (points.length === 0) delete d.routes[key]; else d.routes[key] = points; })}
             onCanvasClick={place}
             onDragEnd={onDragEnd}
             onRoomVertexMove={() => {}}
@@ -172,18 +282,43 @@ export function PlanTab() {
       <aside className="side">
         <section>
           <label className="check field"><input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} />Snap to half-foot grid</label>
+          <label className="check field"><input type="checkbox" checked={snapObjects} onChange={(e) => setSnapObjects(e.target.checked)} />Snap to other objects and walls (hold Alt to skip)</label>
           <label className="check field"><input type="checkbox" checked={showPower} onChange={(e) => setShowPower(e.target.checked)} /><span style={{ color: "var(--power)" }}>Show power wiring</span></label>
           <label className="check field"><input type="checkbox" checked={showNet} onChange={(e) => setShowNet(e.target.checked)} /><span style={{ color: "var(--net)" }}>Show network cables</span></label>
-          <label className="check field"><input type="checkbox" checked={showDimensions} onChange={(e) => setShowDimensions(e.target.checked)} />Show wall and door dimensions</label>
+          <label className="check field"><input type="checkbox" checked={showDimensions} onChange={(e) => setShowDimensions(e.target.checked)} />Show wall and opening dimensions</label>
           {tool === "table" && (
             <label className="field">Table to place
               <select value={preset} onChange={(e) => setPreset(e.target.value)}>
                 {TABLE_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                {customTables.length > 0 && (
+                  <optgroup label="Your tables">
+                    {customTables.map((p) => <option key={p.id} value={`custom:${p.id}`}>{p.name}</option>)}
+                  </optgroup>
+                )}
+              </select>
+            </label>
+          )}
+          {tool === "zone" && (
+            <label className="field">Kind of zone
+              <select value={zoneKind} onChange={(e) => setZoneKind(e.target.value as ZoneKind)}>
+                {Object.entries(ZONE_PRESETS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+              </select>
+            </label>
+          )}
+          {tool === "strip" && (
+            <label className="field">Power strip to place
+              <select value={stripPreset} onChange={(e) => setStripPreset(e.target.value)}>
+                {BUILTIN_STRIP_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                {customStrips.length > 0 && (
+                  <optgroup label="Your strips">
+                    {customStrips.map((p) => <option key={p.id} value={`custom:${p.id}`}>{p.name}</option>)}
+                  </optgroup>
+                )}
               </select>
             </label>
           )}
           {tool === "device" && (
-            <label className="field">Device to place
+            <label className="field">Switch or router to place
               <select value={profileId} onChange={(e) => setProfileId(e.target.value)}>
                 {profiles.filter((p) => p.ports > 0).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
               </select>
@@ -200,15 +335,22 @@ export function PlanTab() {
           )}
         </section>
 
-        <EventInspector selection={selection} clear={clear} />
+        {picked.length >= 2 ? (
+          <MultiInspector picked={picked} clear={clear} />
+        ) : (
+          <>
+            {selectedGroup && <GroupInspector groupId={selectedGroup.id} />}
+            <EventInspector selection={selection} clear={clear} />
+          </>
+        )}
 
         <section>
-          <h3>Warnings <span className="badge info">{report.warnings.length}</span></h3>
-          {report.warnings.length === 0 ? (
+          <h3>Warnings <span className="badge info">{allWarnings.length}</span></h3>
+          {allWarnings.length === 0 ? (
             <p className="muted">Nothing to fix.</p>
           ) : (
             <ul className="warnlist" style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {report.warnings.map((w, i) => (
+              {allWarnings.map((w, i) => (
                 <li key={i}>
                   <button onClick={() => { const t = warnTarget(w.refId); if (t) setSelection(t); }}>
                     <span className={`dot ${w.level}`} aria-hidden />

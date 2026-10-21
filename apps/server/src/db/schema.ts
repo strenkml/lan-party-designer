@@ -47,3 +47,10 @@ export const snapshots = sqliteTable("snapshots", {
   createdAt: integer("created_at").notNull(),
   blob: text("blob", { mode: "json" }).notNull(),
 });
+
+export const presets = sqliteTable("presets", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(),
+  name: text("name").notNull(),
+  spec: text("spec", { mode: "json" }).notNull(),
+});

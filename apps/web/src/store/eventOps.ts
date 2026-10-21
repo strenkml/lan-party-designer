@@ -1,12 +1,15 @@
+import { newId } from "../lib/id";
 import {
   layoutSeats,
   reconcileSeats,
   seatsPerSideFor,
   type DeviceProfile,
   type EventDoc,
+  type GroupMember,
   type Person,
   type Point,
   type Table,
+  type TableSpec,
   type VenueDoc,
 } from "@lpd/shared";
 
@@ -25,21 +28,31 @@ export const TABLE_PRESETS: TablePreset[] = [
   { id: "custom", label: "Custom 4 × 3 ft", shape: "rect", width: 4, depth: 3 },
 ];
 
-/** Mutates the draft: table plus its seats. */
-export function addTable(doc: EventDoc, presetId: string, at: Point, id: string) {
-  const preset = TABLE_PRESETS.find((p) => p.id === presetId) ?? TABLE_PRESETS[0]!;
+/** Mutates the draft: table plus its seats. Takes a built-in preset id or a full spec (a custom preset). */
+export function addTable(doc: EventDoc, preset: string | (TableSpec & { name?: string }), at: Point, id: string) {
+  const builtin = typeof preset === "string" ? (TABLE_PRESETS.find((p) => p.id === preset) ?? TABLE_PRESETS[0]!) : null;
+  const spec: TableSpec & { name?: string } = builtin
+    ? {
+        shape: builtin.shape,
+        width: builtin.width,
+        depth: builtin.depth,
+        seats: builtin.shape === "round" ? 6 : seatsPerSideFor(builtin.width),
+        seatWidthIn: 36,
+        seatSides: "both",
+      }
+    : (preset as TableSpec & { name?: string });
   const table: Table = {
     id,
-    label: `Table ${doc.tables.length + 1}`,
-    shape: preset.shape,
+    label: spec.name || `Table ${doc.tables.length + 1}`,
+    shape: spec.shape,
     x: at.x,
     y: at.y,
-    width: preset.width,
-    depth: preset.depth,
+    width: spec.width,
+    depth: spec.depth,
     rotation: 0,
-    seats: preset.shape === "round" ? 6 : seatsPerSideFor(preset.width),
-    seatWidthIn: 36,
-    seatSides: "both",
+    seats: spec.seats,
+    seatWidthIn: spec.seatWidthIn,
+    seatSides: spec.seatSides,
   };
   doc.tables.push(table);
   doc.seats.push(...reconcileSeats(table, []));
@@ -68,6 +81,7 @@ export function removeTable(doc: EventDoc, id: string) {
   for (const a of doc.attendance) if (a.seatId && gone.has(a.seatId)) a.seatId = null;
   doc.seats = doc.seats.filter((s) => s.tableId !== id);
   doc.tables = doc.tables.filter((t) => t.id !== id);
+  pruneGroups(doc);
 }
 
 export function resetSeat(doc: EventDoc, seatId: string) {
@@ -90,6 +104,7 @@ export function removeStrip(doc: EventDoc, id: string) {
   for (const s of doc.seats) if (s.stripId === id) s.stripId = null;
   for (const s of doc.strips) if (s.pluggedInto?.kind === "strip" && s.pluggedInto.id === id) s.pluggedInto = null;
   for (const d of doc.devices) if (d.pluggedInto?.kind === "strip" && d.pluggedInto.id === id) d.pluggedInto = null;
+  pruneGroups(doc);
 }
 
 export function removeDevice(doc: EventDoc, id: string) {
@@ -101,6 +116,7 @@ export function removeDevice(doc: EventDoc, id: string) {
       s.netPort = null;
     }
   }
+  pruneGroups(doc);
 }
 
 export function removeCord(doc: EventDoc, id: string) {
@@ -145,4 +161,65 @@ export function seatName(doc: EventDoc, seatId: string | null): string {
   const m = /-([ab])(\d+)$/.exec(seat.id);
   const suffix = m ? `${m[1]!.toUpperCase()}${Number(m[2]) + 1}` : seat.label || seat.id;
   return `${table?.label || "Table"} ${suffix}`;
+}
+
+
+export function removeZone(doc: EventDoc, id: string) {
+  doc.zones = doc.zones.filter((z) => z.id !== id);
+  pruneGroups(doc);
+}
+
+// ----- groups -----
+
+const sameMember = (a: GroupMember, b: GroupMember) => a.kind === b.kind && a.id === b.id;
+
+export function groupOf(doc: EventDoc, kind: GroupMember["kind"], id: string) {
+  return doc.groups.find((g) => g.members.some((m) => m.kind === kind && m.id === id));
+}
+
+const exists = (doc: EventDoc, m: GroupMember) =>
+  m.kind === "table" ? doc.tables.some((x) => x.id === m.id)
+  : m.kind === "strip" ? doc.strips.some((x) => x.id === m.id)
+  : m.kind === "device" ? doc.devices.some((x) => x.id === m.id)
+  : doc.zones.some((x) => x.id === m.id);
+
+/** Drops members that no longer exist and groups with fewer than two objects left. */
+export function pruneGroups(doc: EventDoc) {
+  for (const g of doc.groups) g.members = g.members.filter((m) => exists(doc, m));
+  doc.groups = doc.groups.filter((g) => g.members.length >= 2);
+}
+
+/** Groups objects so they move together. An object belongs to one group, so it leaves any earlier one. */
+export function groupObjects(doc: EventDoc, members: GroupMember[], label = ""): string | null {
+  const unique = members.filter((m, i) => members.findIndex((x) => sameMember(x, m)) === i && exists(doc, m));
+  if (unique.length < 2) return null;
+  for (const g of doc.groups) g.members = g.members.filter((m) => !unique.some((u) => sameMember(u, m)));
+  const id = newId("group");
+  doc.groups.push({ id, label, members: unique });
+  pruneGroups(doc);
+  return id;
+}
+
+export function ungroup(doc: EventDoc, groupId: string) {
+  doc.groups = doc.groups.filter((g) => g.id !== groupId);
+}
+
+/** Moves objects by the same amount. A table takes all of its chairs along, including ones moved by hand. */
+export function translateObjects(doc: EventDoc, members: GroupMember[], dx: number, dy: number) {
+  const round = (n: number) => Math.round(n * 1e6) / 1e6;
+  const shift = (o: { x: number; y: number }) => {
+    o.x = round(o.x + dx);
+    o.y = round(o.y + dy);
+  };
+  for (const m of members) {
+    if (m.kind === "table") {
+      const t = doc.tables.find((x) => x.id === m.id);
+      if (!t) continue;
+      shift(t);
+      for (const seat of doc.seats) if (seat.tableId === t.id) shift(seat);
+    }
+    if (m.kind === "strip") doc.strips.filter((x) => x.id === m.id).forEach(shift);
+    if (m.kind === "device") doc.devices.filter((x) => x.id === m.id).forEach(shift);
+    if (m.kind === "zone") doc.zones.filter((x) => x.id === m.id).forEach(shift);
+  }
 }

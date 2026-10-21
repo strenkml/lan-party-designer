@@ -15,12 +15,24 @@ import { createDocStore } from "../store/docStore";
 
 const useVenueDoc = createDocStore<VenueDoc>(VenueDoc.parse({}));
 
+/** Things cut into a wall. They snap onto it and cannot sit loose in the room. */
+const OPENINGS = {
+  door: { noun: "a door", width: 3 },
+  window: { noun: "a window", width: 4 },
+  garage: { noun: "a garage door", width: 9 },
+} as const;
+type OpeningTool = keyof typeof OPENINGS;
+const isOpening = (k: string): k is OpeningTool => k in OPENINGS;
+
 const TOOLS: { tool: Tool; label: string }[] = [
   { tool: "select", label: "Select" },
   { tool: "room", label: "Room" },
   { tool: "door", label: "Door" },
+  { tool: "window", label: "Window" },
+  { tool: "garage", label: "Garage" },
   { tool: "obstacle", label: "Obstacle" },
   { tool: "outlet", label: "Outlet" },
+  { tool: "jack", label: "Net jack" },
 ];
 
 export function VenuePage({ id }: { id: string }) {
@@ -62,7 +74,10 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
     if (!selection) return;
     update((d) => {
       if (selection.kind === "outlet") d.outlets = d.outlets.filter((o) => o.id !== selection.id);
+      if (selection.kind === "jack") d.jacks = d.jacks.filter((o) => o.id !== selection.id);
       if (selection.kind === "door") d.doors = d.doors.filter((o) => o.id !== selection.id);
+      if (selection.kind === "window") d.windows = d.windows.filter((o) => o.id !== selection.id);
+      if (selection.kind === "garage") d.garageDoors = d.garageDoors.filter((o) => o.id !== selection.id);
       if (selection.kind === "obstacle") d.obstacles = d.obstacles.filter((o) => o.id !== selection.id);
     });
     setSelection(null);
@@ -91,18 +106,22 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
     }
     if (tool === "calibrate") return setCalibration((c) => (c.length >= 2 ? [pt] : [...c, pt]));
     const newIdValue = newId(tool);
-    const wall = tool === "door" ? snapToWall(doc.room, pt, { maxDistFt: 4 }) : tool === "outlet" ? snapToWall(doc.room, pt, { maxDistFt: 2 }) : null;
-    if (tool === "door" && !wall) {
-      toast(doc.room.length < 3 ? "Draw the room first so doors can snap onto its walls." : "Click closer to a wall to place a door.");
+    const wall = isOpening(tool) ? snapToWall(doc.room, pt, { maxDistFt: 4 }) : tool === "outlet" || tool === "jack" ? snapToWall(doc.room, pt, { maxDistFt: 2 }) : null;
+    if (isOpening(tool) && !wall) {
+      const noun = OPENINGS[tool].noun;
+      toast(doc.room.length < 3 ? `Draw the room first so ${noun} can snap onto its walls.` : `Click closer to a wall to place ${noun}.`);
       if (doc.room.length >= 3) return;
     }
     const spot = wall?.point ?? pt;
     update((d) => {
       if (tool === "door") d.doors.push({ id: newIdValue, x: spot.x, y: spot.y, width: 3, rotation: wall?.rotation ?? 0, flipSwing: false, flipHinge: false });
+      if (tool === "window") d.windows.push({ id: newIdValue, x: spot.x, y: spot.y, width: OPENINGS.window.width, rotation: wall?.rotation ?? 0 });
+      if (tool === "garage") d.garageDoors.push({ id: newIdValue, x: spot.x, y: spot.y, width: OPENINGS.garage.width, rotation: wall?.rotation ?? 0 });
       if (tool === "obstacle") d.obstacles.push({ id: newIdValue, label: "Obstacle", x: pt.x, y: pt.y, width: 3, depth: 3, rotation: 0 });
-      if (tool === "outlet") d.outlets.push({ id: newIdValue, label: "", x: spot.x, y: spot.y, circuitId: paintCircuit, amps: 15, sockets: 2 });
+      if (tool === "jack") d.jacks.push({ id: newIdValue, label: `Jack ${d.jacks.length + 1}`, x: spot.x, y: spot.y, rotation: wall?.rotation ?? 0, heightIn: 12 });
+      if (tool === "outlet") d.outlets.push({ id: newIdValue, label: "", x: spot.x, y: spot.y, circuitId: paintCircuit, amps: 15, sockets: 2, heightIn: 12 });
     });
-    if (tool === "door" || tool === "obstacle" || tool === "outlet") setSelection({ kind: tool, id: newIdValue });
+    if (isOpening(tool) || tool === "obstacle" || tool === "outlet" || tool === "jack") setSelection({ kind: tool, id: newIdValue });
   };
 
   const onSelect = (s: Selection | null) => {
@@ -117,12 +136,19 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
 
   const onDragEnd = (s: Selection, pt: Point) =>
     update((d) => {
-      const list = s.kind === "outlet" ? d.outlets : s.kind === "door" ? d.doors : s.kind === "obstacle" ? d.obstacles : [];
-      const item = list.find((x) => x.id === s.id);
+      const list =
+        s.kind === "outlet" ? d.outlets
+        : s.kind === "jack" ? d.jacks
+        : s.kind === "door" ? d.doors
+        : s.kind === "window" ? d.windows
+        : s.kind === "garage" ? d.garageDoors
+        : s.kind === "obstacle" ? d.obstacles
+        : [];
+      const item = (list as { id: string; rotation?: number }[]).find((x) => x.id === s.id);
       if (!item) return;
-      const wall = s.kind === "door" ? snapToWall(d.room, pt, { maxDistFt: 4 }) : s.kind === "outlet" ? snapToWall(d.room, pt, { maxDistFt: 2 }) : null;
+      const wall = isOpening(s.kind) ? snapToWall(d.room, pt, { maxDistFt: 4 }) : s.kind === "outlet" || s.kind === "jack" ? snapToWall(d.room, pt, { maxDistFt: 2 }) : null;
       Object.assign(item, wall?.point ?? pt);
-      if (s.kind === "door" && wall) (item as { rotation: number }).rotation = wall.rotation;
+      if ((isOpening(s.kind) || s.kind === "jack") && wall) item.rotation = wall.rotation;
     });
 
   const calibrationDistance = calibration.length === 2 ? Math.hypot(calibration[0]!.x - calibration[1]!.x, calibration[0]!.y - calibration[1]!.y) : 0;
@@ -188,7 +214,7 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
             </label>
             <label className="check field">
               <input type="checkbox" checked={showDimensions} onChange={(e) => setShowDimensions(e.target.checked)} />
-              Show wall and door dimensions
+              Show wall and opening dimensions
             </label>
             {paintCircuit && (
               <div className="badge warn" role="status">
@@ -228,7 +254,7 @@ function Inspector({ selection }: { selection: Selection | null }) {
     return (
       <section>
         <h3>Nothing selected</h3>
-        <p className="muted">Draw the room outline, then add doors, obstacles and outlets. Drag anything to move it.</p>
+        <p className="muted">Draw the room outline, then add doors, windows, garage doors, obstacles, outlets and network jacks. Drag anything to move it.</p>
       </section>
     );
   }
@@ -248,6 +274,8 @@ function Inspector({ selection }: { selection: Selection | null }) {
             {doc.circuits.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
         </label>
+        <NumberField label="Height off the floor" suffix="in" step={1} min={0} value={o.heightIn} onChange={(v) => set((t) => void (t.heightIn = Math.max(0, v)))} />
+        <p className="muted" style={{ margin: 0 }}>Cables drop this far down the wall before running along the floor. Standard is 12 in, kitchen counters about 42 in.</p>
         <NumberField label="Plugs" step={1} min={1} value={o.sockets} onChange={(v) => set((t) => void (t.sockets = Math.max(1, Math.round(v))))} />
         <p className="muted" style={{ margin: 0 }}>A standard wall outlet has 2 plugs. Count every socket you can use.</p>
         <NumberField label="Outlet rating" suffix="A" step={5} value={o.amps} onChange={(v) => set((t) => void (t.amps = v))} />
@@ -273,6 +301,44 @@ function Inspector({ selection }: { selection: Selection | null }) {
         <p className="muted" style={{ margin: 0 }}>
           Currently swings {o.flipSwing ? "out of" : "into"} the room, hinged on the {o.flipHinge ? "right" : "left"}.
         </p>
+      </section>
+    );
+  }
+  if (selection.kind === "jack") {
+    const o = doc.jacks.find((x) => x.id === selection.id);
+    if (!o) return null;
+    return (
+      <section>
+        <h3>Network jack</h3>
+        <TextField label="Label" value={o.label} onChange={(v) => update((d) => { const t = d.jacks.find((x) => x.id === o.id); if (t) t.label = v; }, { key })} />
+        <NumberField label="Height off the floor" suffix="in" step={1} min={0} value={o.heightIn} onChange={(v) => update((d) => { const t = d.jacks.find((x) => x.id === o.id); if (t) t.heightIn = Math.max(0, v); }, { key })} />
+        <p className="muted" style={{ margin: 0 }}>In an event, point a router or switch at this jack and the cable length goes on the shopping list.</p>
+      </section>
+    );
+  }
+  if (selection.kind === "window") {
+    const o = doc.windows.find((x) => x.id === selection.id);
+    if (!o) return null;
+    return (
+      <section>
+        <h3>Window</h3>
+        <NumberField label="Width" suffix="ft" value={o.width} min={1} onChange={(v) => update((d) => { const t = d.windows.find((x) => x.id === o.id); if (t) t.width = v; }, { key })} />
+        <p className="muted" style={{ margin: 0 }}>Drag it along a wall to move it.</p>
+      </section>
+    );
+  }
+  if (selection.kind === "garage") {
+    const o = doc.garageDoors.find((x) => x.id === selection.id);
+    if (!o) return null;
+    const setWidth = (v: number) => update((d) => { const t = d.garageDoors.find((x) => x.id === o.id); if (t) t.width = v; }, { key });
+    return (
+      <section>
+        <h3>Garage door</h3>
+        <div className="row">
+          <button className="btn" aria-pressed={o.width === 9} onClick={() => setWidth(9)}>Single (9 ft)</button>
+          <button className="btn" aria-pressed={o.width === 16} onClick={() => setWidth(16)}>Double (16 ft)</button>
+        </div>
+        <NumberField label="Width" suffix="ft" value={o.width} min={4} onChange={setWidth} />
       </section>
     );
   }

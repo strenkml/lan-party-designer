@@ -152,3 +152,33 @@ export const downloadJson = (name: string, data: unknown) => {
   a.click();
   URL.revokeObjectURL(url);
 };
+
+export function NameDialog(props: {
+  title: string;
+  label?: string;
+  initial?: string;
+  action: string;
+  onClose: () => void;
+  onSubmit: (name: string) => void | Promise<void>;
+}) {
+  const [name, setName] = useState(props.initial ?? "");
+  return (
+    <Dialog title={props.title} onClose={props.onClose}>
+      <form
+        className="stack"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (!name.trim()) return;
+          await props.onSubmit(name.trim());
+          props.onClose();
+        }}
+      >
+        <label className="field">
+          {props.label ?? "Name"}
+          <input type="text" autoFocus value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <button className="btn primary" disabled={!name.trim()}>{props.action}</button>
+      </form>
+    </Dialog>
+  );
+}

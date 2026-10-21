@@ -6,3 +6,6 @@ export * from "./autowire";
 export * from "./runs";
 export * from "./profiles";
 export * from "./bundle";
+export * from "./presets";
+export * from "./connections";
+export * from "./geometry";

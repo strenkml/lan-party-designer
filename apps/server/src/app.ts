@@ -3,6 +3,8 @@ import {
   EventBundle,
   EventDoc,
   Person,
+  Preset,
+  PresetBody,
   VenueDoc,
   type EventBundle as EventBundleT,
 } from "@lpd/shared";
@@ -12,7 +14,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, extname } from "node:path";
 import { z } from "zod";
 import type { Db } from "./db";
-import { deviceProfiles, events, people, snapshots, venues } from "./db/schema";
+import { deviceProfiles, events, people, presets, snapshots, venues } from "./db/schema";
 
 const now = () => Date.now();
 const newId = () => crypto.randomUUID();
@@ -172,6 +174,7 @@ export function createApp(db: Db, dataDir: string) {
       venue: { name: venue.name, doc: venue.doc },
       people: db.select().from(people).all(),
       profiles: db.select().from(deviceProfiles).all(),
+      presets: db.select().from(presets).all(),
     });
   };
   app.get("/api/events/:id/export", (c) => {
@@ -189,6 +192,7 @@ export function createApp(db: Db, dataDir: string) {
       tx.insert(events).values({ id: eventId, venueId, name: b.event.name, date: b.event.date, doc: b.event.doc, createdAt: now(), updatedAt: now() }).run();
       for (const p of b.people) tx.insert(people).values(p).onConflictDoNothing().run();
       for (const p of b.profiles) tx.insert(deviceProfiles).values(p).onConflictDoNothing().run();
+      for (const p of b.presets) tx.insert(presets).values(p).onConflictDoNothing().run();
     });
     return c.json({ eventId, venueId }, 201);
   });
@@ -271,6 +275,26 @@ export function createApp(db: Db, dataDir: string) {
   });
   app.delete("/api/profiles/:id", (c) => {
     db.delete(deviceProfiles).where(eq(deviceProfiles.id, c.req.param("id"))).run();
+    return c.json({ ok: true });
+  });
+
+  // ----- custom table and strip presets -----
+  app.get("/api/presets", (c) => c.json(db.select().from(presets).all().map((r) => Preset.parse(r))));
+  app.post("/api/presets", async (c) => {
+    const body = PresetBody.safeParse(await c.req.json());
+    if (!body.success) return bad(c, body.error);
+    const row = { id: newId(), ...body.data };
+    db.insert(presets).values(row).run();
+    return c.json(row, 201);
+  });
+  app.put("/api/presets/:id", async (c) => {
+    const body = PresetBody.safeParse(await c.req.json());
+    if (!body.success) return bad(c, body.error);
+    const res = db.update(presets).set(body.data).where(eq(presets.id, c.req.param("id"))).run();
+    return res.changes ? c.json({ ok: true }) : c.json({ error: "not found" }, 404);
+  });
+  app.delete("/api/presets/:id", (c) => {
+    db.delete(presets).where(eq(presets.id, c.req.param("id"))).run();
     return c.json({ ok: true });
   });
 

@@ -1,18 +1,26 @@
 import type Konva from "konva";
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import { Circle, Group, Image as KImage, Layer, Line, Rect, Shape, Stage, Text } from "react-konva";
-import { type EventDoc, type Level, type Point, type VenueDoc } from "@lpd/shared";
+import { cableConnections, type EventDoc, type Level, type Point, type VenueDoc } from "@lpd/shared";
 import { uploadUrl } from "../lib/api";
 import { useCssColors } from "../theme/theme";
 import { wallDimensions } from "../lib/dimensions";
+import { boxAround, type SnapGuide } from "../lib/snapping";
 import { guideRoomPoint, type GuidedPoint } from "../lib/guides";
 import { useImage } from "./useImage";
 
 /** Pixels per foot at zoom 1. */
 export const PPF = 24;
+export const ZONE_COLORS: Record<string, string> = {
+  walkway: "#7a8aa0",
+  food: "#e4572e",
+  storage: "#8d6a4b",
+  stage: "#9b5de5",
+  other: "#17bebb",
+};
 export const CIRCUIT_COLORS = ["#e4572e", "#17bebb", "#e0a800", "#76b041", "#9b5de5", "#f15bb5", "#00a6fb", "#8d6a4b"];
 
-export type SelKind = "outlet" | "door" | "obstacle" | "table" | "seat" | "strip" | "device" | "cord";
+export type SelKind = "zone" | "cable" | "outlet" | "jack" | "door" | "window" | "garage" | "obstacle" | "table" | "seat" | "strip" | "device" | "cord";
 export interface Selection {
   kind: SelKind;
   id: string;
@@ -22,9 +30,13 @@ export type Tool =
   | "select"
   | "room"
   | "door"
+  | "window"
+  | "garage"
   | "obstacle"
   | "outlet"
+  | "jack"
   | "table"
+  | "zone"
   | "strip"
   | "device"
   | "calibrate";
@@ -34,6 +46,8 @@ export interface FloorPlanProps {
   event?: EventDoc;
   tool: Tool;
   selection: Selection | null;
+  /** Everything to draw as selected: the selection, shift-picked objects and the rest of a selected group. */
+  highlight?: Selection[];
   snap: boolean;
   showPower: boolean;
   showNet: boolean;
@@ -46,6 +60,12 @@ export interface FloorPlanProps {
   seatLabels: Record<string, string>;
   seatTint: Record<string, "done" | "partial" | "none">;
   onSelect: (s: Selection | null) => void;
+  /** Shift-click: add to or remove from the picked objects. */
+  onToggleSelect?: (s: Selection) => void;
+  /** While dragging: where the item should land once lined up with other objects, or null for no snapping. */
+  snapToObjects?: (sel: Selection, pt: Point, bypass: boolean) => { pt: Point; guides: SnapGuide[] } | null;
+  /** Hand-drawn bend points for a cable. An empty list clears the route. */
+  onRouteChange?: (key: string, points: Point[]) => void;
   onCanvasClick: (pt: Point) => void;
   onDragEnd: (s: Selection, pt: Point) => void;
   onRoomVertexMove: (index: number, pt: Point) => void;
@@ -68,6 +88,8 @@ export function FloorPlan(props: FloorPlanProps) {
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [view, setView] = useState({ x: 40, y: 40, scale: 1 });
   const [cursor, setCursor] = useState<GuidedPoint | null>(null);
+  const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
+  const lastObjectSnap = useRef<Point | null>(null);
   const fitted = useRef(false);
 
   const bgImage = useImage(venue.background ? uploadUrl(venue.background.file) : null);
@@ -81,9 +103,24 @@ export function FloorPlan(props: FloorPlanProps) {
     return () => ro.disconnect();
   }, []);
 
+  const connections = useMemo(
+    () =>
+      event
+        ? cableConnections(venue, event).filter((cn) => (cn.kind === "ethernet" ? props.showNet : props.showPower))
+        : [],
+    [venue, event, props.showNet, props.showPower],
+  );
+
   const dims = useMemo(
-    () => (props.showDimensions ? wallDimensions(venue.room, venue.doors) : []),
-    [props.showDimensions, venue.room, venue.doors],
+    () =>
+      props.showDimensions
+        ? wallDimensions(venue.room, [
+            ...venue.doors.map((d) => ({ ...d, kind: "door" as const })),
+            ...venue.windows.map((d) => ({ ...d, kind: "window" as const })),
+            ...venue.garageDoors.map((d) => ({ ...d, kind: "garage" as const })),
+          ])
+        : [],
+    [props.showDimensions, venue.room, venue.doors, venue.windows, venue.garageDoors],
   );
 
   const circuitColor = useMemo(() => {
@@ -150,7 +187,8 @@ export function FloorPlan(props: FloorPlanProps) {
     setView({ scale: next, x: cx - mouse.x * next, y: cy - mouse.y * next });
   };
 
-  const selected = (kind: SelKind, id: string) => props.selection?.kind === kind && props.selection.id === id;
+  const selected = (kind: SelKind, id: string) =>
+    (props.selection?.kind === kind && props.selection.id === id) || !!props.highlight?.some((h) => h.kind === kind && h.id === id);
   const interactive = props.tool === "select";
   const lvlColor = (l?: Level) => (l === "danger" ? c.danger : l === "warn" ? c.warn : null);
 
@@ -159,21 +197,41 @@ export function FloorPlan(props: FloorPlanProps) {
     onClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
       if (!interactive) return;
       e.cancelBubble = true;
-      props.onSelect(sel);
+      if (e.evt.shiftKey && props.onToggleSelect) props.onToggleSelect(sel);
+      else props.onSelect(sel);
     },
-    onDragStart: () => props.onSelect(sel),
+    onDragStart: (e: Konva.KonvaEventObject<globalThis.DragEvent>) => {
+      // picking up an object that is already part of the highlighted set keeps that set
+      if (!props.highlight?.some((h) => h.kind === sel.kind && h.id === sel.id) && !e.evt.shiftKey) props.onSelect(sel);
+    },
+    onDragMove: (e: Konva.KonvaEventObject<globalThis.DragEvent>) => {
+      if (!props.snapToObjects) return;
+      const node = e.target;
+      const snapped = props.snapToObjects(sel, { x: node.x() / PPF, y: node.y() / PPF }, e.evt.altKey);
+      if (snapped) {
+        node.position({ x: snapped.pt.x * PPF, y: snapped.pt.y * PPF });
+        lastObjectSnap.current = snapped.guides.length ? snapped.pt : null;
+        setSnapGuides(snapped.guides);
+      } else {
+        lastObjectSnap.current = null;
+        setSnapGuides([]);
+      }
+    },
     onDragEnd: (e: Konva.KonvaEventObject<globalThis.DragEvent>) => {
       const node = e.target;
-      const pt = { x: snapTo(node.x() / PPF, props.snap), y: snapTo(node.y() / PPF, props.snap) };
+      // lined up with another object wins over the half-foot grid
+      const pt = lastObjectSnap.current ?? { x: snapTo(node.x() / PPF, props.snap), y: snapTo(node.y() / PPF, props.snap) };
+      lastObjectSnap.current = null;
+      setSnapGuides([]);
       node.position({ x: pt.x * PPF, y: pt.y * PPF });
       props.onDragEnd(sel, pt);
     },
   });
 
   const onStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
-    if (e.target !== e.target.getStage() && !e.target.attrs.bg) return;
     if (props.tool === "select") {
-      props.onSelect(null);
+      // only a click on empty floor clears the selection; items handle their own clicks
+      if (e.target === e.target.getStage() || e.target.attrs.bg) props.onSelect(null);
       return;
     }
     const g = guidedPointer(e.evt.shiftKey);
@@ -223,7 +281,9 @@ export function FloorPlan(props: FloorPlanProps) {
   const hint =
     tool === "room" ? "Click to add corners. Guides square them up (hold Shift to draw freely). Click the first corner or press Enter to close."
     : tool === "calibrate" ? `Click two points that are a known distance apart (${props.calibration.length}/2).`
-    : tool === "door" || tool === "outlet" ? `Click near a wall to place ${tool === "door" ? "a door" : "an outlet"}. It snaps onto the wall. Press Esc to stop.`
+    : tool === "door" || tool === "window" || tool === "garage" || tool === "outlet" || tool === "jack"
+      ? `Click near a wall to place ${{ door: "a door", window: "a window", garage: "a garage door", outlet: "an outlet", jack: "a network jack" }[tool]}. It snaps onto the wall. Press Esc to stop.`
+    : tool === "zone" ? "Click to place a zone. Drag it to move, and set its size in the panel. Press Esc to stop."
     : tool !== "select" ? "Click on the plan to place. Press Esc to stop." : null;
 
   return (
@@ -332,6 +392,50 @@ export function FloorPlan(props: FloorPlanProps) {
             );
           })}
 
+          {venue.windows.map((w) => {
+            const half = (w.width * PPF) / 2;
+            const sel = selected("window", w.id);
+            const stroke = sel ? c.focus : c.ink;
+            return (
+              <Group key={w.id} x={w.x * PPF} y={w.y * PPF} rotation={w.rotation} {...dragProps({ kind: "window", id: w.id })}>
+                <Rect x={-half - 4} y={-9} width={half * 2 + 8} height={18} fill="transparent" />
+                <Rect x={-half} y={-4} width={half * 2} height={8} fill={c.floor} listening={false} />
+                <Line points={[-half, -4, half, -4]} stroke={stroke} strokeWidth={1.5} listening={false} />
+                <Line points={[-half, 0, half, 0]} stroke={sel ? c.focus : c.net} strokeWidth={2} listening={false} />
+                <Line points={[-half, 4, half, 4]} stroke={stroke} strokeWidth={1.5} listening={false} />
+                <Line points={[-half, -5, -half, 5]} stroke={stroke} strokeWidth={3} listening={false} />
+                <Line points={[half, -5, half, 5]} stroke={stroke} strokeWidth={3} listening={false} />
+              </Group>
+            );
+          })}
+
+          {/* garage door labels stay upright whatever wall the door is on */}
+          {venue.garageDoors.map((g) => {
+            const r = (g.rotation * Math.PI) / 180;
+            return (
+              <Text key={`gl${g.id}`} text="Garage door" x={g.x * PPF - 40 - Math.sin(r) * 16} y={g.y * PPF - 5 + Math.cos(r) * 16}
+                width={80} align="center" fontSize={10} fill={c["ink-2"]} listening={false} />
+            );
+          })}
+
+          {venue.garageDoors.map((g) => {
+            const half = (g.width * PPF) / 2;
+            const sel = selected("garage", g.id);
+            const stroke = sel ? c.focus : c.ink;
+            return (
+              <Group key={g.id} x={g.x * PPF} y={g.y * PPF} rotation={g.rotation} {...dragProps({ kind: "garage", id: g.id })}>
+                <Rect x={-half - 4} y={-9} width={half * 2 + 8} height={36} fill="transparent" />
+                <Rect x={-half} y={-4} width={half * 2} height={8} fill={c.floor} listening={false} />
+                <Line points={[-half, 0, half, 0]} stroke={stroke} strokeWidth={3} dash={[10, 5]} listening={false} />
+                {/* tracks the door rolls up along, inside the room */}
+                <Line points={[-half, 4, -half, 22]} stroke={c["ink-2"]} strokeWidth={1} dash={[3, 3]} listening={false} />
+                <Line points={[half, 4, half, 22]} stroke={c["ink-2"]} strokeWidth={1} dash={[3, 3]} listening={false} />
+                <Line points={[-half, -5, -half, 5]} stroke={stroke} strokeWidth={3} listening={false} />
+                <Line points={[half, -5, half, 5]} stroke={stroke} strokeWidth={3} listening={false} />
+              </Group>
+            );
+          })}
+
           {/* wall dimensions */}
           {dims.map((w) => {
             const fs = 11 / view.scale;
@@ -348,7 +452,7 @@ export function FloorPlan(props: FloorPlanProps) {
                   const label = `${sp.lengthFt} ft`;
                   const mid = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
                   const lw = (label.length * 6.2 + 8) / view.scale;
-                  const color = sp.kind === "door" ? c.focus : c["ink-2"];
+                  const color = sp.kind !== "wall" ? c.focus : c["ink-2"];
                   const t0 = pt(sp.startFt, off - 0.35);
                   const t1 = pt(sp.startFt, off + 0.35);
                   const t2 = pt(sp.endFt, off - 0.35);
@@ -359,7 +463,7 @@ export function FloorPlan(props: FloorPlanProps) {
                       <Line points={[t0.x, t0.y, t1.x, t1.y]} stroke={color} strokeWidth={1} strokeScaleEnabled={false} />
                       <Line points={[t2.x, t2.y, t3.x, t3.y]} stroke={color} strokeWidth={1} strokeScaleEnabled={false} />
                       <Rect x={mid.x - lw / 2} y={mid.y - fs * 0.75} width={lw} height={fs * 1.5} fill={c.panel} opacity={0.9} cornerRadius={3 / view.scale} />
-                      <Text text={label} x={mid.x - lw / 2} y={mid.y - fs * 0.5} width={lw} align="center" fontSize={fs} fill={color} fontStyle={sp.kind === "door" ? "bold" : "normal"} />
+                      <Text text={label} x={mid.x - lw / 2} y={mid.y - fs * 0.5} width={lw} align="center" fontSize={fs} fill={color} fontStyle={sp.kind !== "wall" ? "bold" : "normal"} />
                     </Group>
                   );
                 })}
@@ -368,39 +472,72 @@ export function FloorPlan(props: FloorPlanProps) {
           })}
 
           {/* cables, drawn under items */}
-          {event && props.showNet && (
-            <>
-              {event.seats.map((s) => {
-                const d = s.netDeviceId ? deviceById.get(s.netDeviceId) : undefined;
-                return d ? line([s, d], c.net, { key: `n-${s.id}`, width: 1.5 }) : null;
-              })}
-              {event.uplinks.map((u) => {
-                const a = deviceById.get(u.fromDeviceId), b = deviceById.get(u.toDeviceId);
-                return a && b ? line([a, b], c.net, { key: `u-${u.id}`, width: 3 }) : null;
-              })}
-            </>
-          )}
-          {event && props.showPower && (
-            <>
-              {event.seats.map((s) => {
-                const st = s.stripId ? stripById.get(s.stripId) : undefined;
-                return st ? line([s, st], c.power, { key: `p-${s.id}`, dash: [5, 4], width: 1.2 }) : null;
-              })}
-              {event.strips.map((st) => {
-                const t = st.pluggedInto ? targetPoint(st.pluggedInto) : undefined;
-                return t ? line([st, t], c.power, { key: `sp-${st.id}`, width: 2.5 }) : null;
-              })}
-              {event.devices.map((d) => {
-                const t = d.pluggedInto ? targetPoint(d.pluggedInto) : undefined;
-                return t ? line([d, t], c.power, { key: `dp-${d.id}`, width: 2 }) : null;
-              })}
-              {event.cords.map((cd) => {
-                const o = cd.outletId ? outletById.get(cd.outletId) : undefined;
-                const feed = [...event.strips, ...event.devices].find((x) => x.pluggedInto?.kind === "cord" && x.pluggedInto.id === cd.id);
-                return o && feed ? line([o, feed], c.power, { key: `c-${cd.id}`, width: 4 }) : null;
-              })}
-            </>
-          )}
+          {event && props.showPower && event.seats.map((sd) => {
+            const st = sd.stripId ? stripById.get(sd.stripId) : undefined;
+            return st ? line([sd, st], c.power, { key: `p-${sd.id}`, dash: [5, 4], width: 1.2 }) : null;
+          })}
+          {event && connections.map((cn) => {
+            const sel = props.selection?.kind === "cable" && props.selection.id === cn.key;
+            const color = cn.kind === "ethernet" ? c.net : c.power;
+            const base = cn.key.startsWith("pwr:cord") ? 4 : cn.kind === "power" ? 2.5 : cn.key.startsWith("eth:jack-") || cn.key.startsWith("eth:up") ? 3 : 1.75;
+            return (
+              <Line
+                key={cn.key}
+                points={[cn.from, ...cn.waypoints, cn.to].flatMap((p) => [p.x * PPF, p.y * PPF])}
+                stroke={sel ? c.focus : color}
+                strokeWidth={sel ? base + 1.5 : base}
+                strokeScaleEnabled={false}
+                dash={cn.key.startsWith("eth:jack-") ? [8, 4] : undefined}
+                opacity={sel ? 1 : 0.85}
+                lineJoin="round"
+                hitStrokeWidth={14}
+                listening={interactive}
+                onClick={(e) => {
+                  if (!interactive) return;
+                  e.cancelBubble = true;
+                  props.onSelect({ kind: "cable", id: cn.key });
+                }}
+              />
+            );
+          })}
+
+          {/* zones: marked-out areas under the furniture */}
+          {event?.zones.map((z) => {
+            const sel = selected("zone", z.id);
+            const color = ZONE_COLORS[z.kind] ?? ZONE_COLORS.other!;
+            const w = z.width * PPF;
+            const h = z.depth * PPF;
+            return (
+              <Group key={z.id} x={z.x * PPF} y={z.y * PPF} rotation={z.rotation} {...dragProps({ kind: "zone", id: z.id })}>
+                <Rect x={-w / 2} y={-h / 2} width={w} height={h} fill={color} opacity={0.2} />
+                <Rect x={-w / 2} y={-h / 2} width={w} height={h} stroke={sel ? c.focus : color} strokeWidth={sel ? 3 : 1.5} dash={z.kind === "walkway" ? [8, 6] : undefined} />
+                <Text text={z.label || z.kind} x={0} y={0} width={Math.max(w, 90)} offsetX={Math.max(w, 90) / 2} offsetY={6} rotation={-z.rotation} align="center" fontSize={12} fontStyle="bold" fill={c.ink} opacity={0.75} listening={false} />
+              </Group>
+            );
+          })}
+
+          {/* outline around each group */}
+          {event?.groups.map((g) => {
+            const boxes = g.members.flatMap((m) => {
+              if (m.kind === "table") { const t = event.tables.find((x) => x.id === m.id); return t ? [boxAround({ x: t.x, y: t.y, width: t.width, depth: t.shape === "round" ? t.width : t.depth, rotation: t.rotation }), ...event.seats.filter((s) => s.tableId === t.id).map((s) => boxAround({ x: s.x, y: s.y, width: 1.4, depth: 1.4, rotation: 0 }))] : []; }
+              if (m.kind === "strip") { const t = event.strips.find((x) => x.id === m.id); return t ? [boxAround({ x: t.x, y: t.y, width: 2.4, depth: 0.8, rotation: t.rotation })] : []; }
+              if (m.kind === "device") { const t = event.devices.find((x) => x.id === m.id); return t ? [boxAround({ x: t.x, y: t.y, width: 3.2, depth: 1.1, rotation: t.rotation })] : []; }
+              const t = event.zones.find((x) => x.id === m.id);
+              return t ? [boxAround({ x: t.x, y: t.y, width: t.width, depth: t.depth, rotation: t.rotation })] : [];
+            });
+            if (boxes.length === 0) return null;
+            const pad = 0.6;
+            const minX = Math.min(...boxes.map((b) => b.minX)) - pad, maxX = Math.max(...boxes.map((b) => b.maxX)) + pad;
+            const minY = Math.min(...boxes.map((b) => b.minY)) - pad, maxY = Math.max(...boxes.map((b) => b.maxY)) + pad;
+            const active = g.members.some((m) => selected(m.kind as SelKind, m.id));
+            return (
+              <Group key={g.id} listening={false}>
+                <Rect x={minX * PPF} y={minY * PPF} width={(maxX - minX) * PPF} height={(maxY - minY) * PPF} cornerRadius={6}
+                  stroke={active ? c.focus : c["ink-2"]} strokeWidth={active ? 2 : 1} dash={[2, 5]} opacity={active ? 1 : 0.7} />
+                <Text text={g.label || "Group"} x={minX * PPF + 4} y={minY * PPF - 15 / view.scale} fontSize={11 / view.scale} fill={active ? c.focus : c["ink-2"]} fontStyle="bold" />
+              </Group>
+            );
+          })}
 
           {/* tables and seats */}
           {event?.tables.map((t) => (
@@ -434,7 +571,7 @@ export function FloorPlan(props: FloorPlanProps) {
           })}
 
           {event?.strips.map((st) => (
-            <Group key={st.id} x={st.x * PPF} y={st.y * PPF} {...dragProps({ kind: "strip", id: st.id })}>
+            <Group key={st.id} x={st.x * PPF} y={st.y * PPF} rotation={st.rotation} {...dragProps({ kind: "strip", id: st.id })}>
               <Rect x={-1.2 * PPF} y={-0.4 * PPF} width={2.4 * PPF} height={0.8 * PPF} cornerRadius={4} fill={c.panel}
                 stroke={selected("strip", st.id) ? c.focus : lvlColor(props.levels[st.id]) ?? c.power} strokeWidth={selected("strip", st.id) ? 3 : 2} />
               {Array.from({ length: Math.min(st.sockets, 8) }, (_, i) => (
@@ -445,12 +582,25 @@ export function FloorPlan(props: FloorPlanProps) {
           ))}
 
           {event?.devices.map((d) => (
-            <Group key={d.id} x={d.x * PPF} y={d.y * PPF} {...dragProps({ kind: "device", id: d.id })}>
+            <Group key={d.id} x={d.x * PPF} y={d.y * PPF} rotation={d.rotation} {...dragProps({ kind: "device", id: d.id })}>
               <Rect x={-1.6 * PPF} y={-0.55 * PPF} width={3.2 * PPF} height={1.1 * PPF} cornerRadius={4} fill={c.panel}
                 stroke={selected("device", d.id) ? c.focus : c.net} strokeWidth={selected("device", d.id) ? 3 : 2} />
-              <Text text={d.label || "Device"} x={-1.6 * PPF} y={-5} width={3.2 * PPF} align="center" fontSize={10} fill={c.ink} listening={false} wrap="none" ellipsis />
+              {/* label stays upright whatever the device's rotation */}
+              <Text text={d.label || "Device"} x={0} y={0} width={3.2 * PPF} offsetX={1.6 * PPF} offsetY={5} rotation={-d.rotation} align="center" fontSize={10} fill={c.ink} listening={false} wrap="none" ellipsis />
             </Group>
           ))}
+
+          {venue.jacks.map((j) => {
+            const sel = selected("jack", j.id);
+            return (
+              <Group key={j.id} x={j.x * PPF} y={j.y * PPF} rotation={j.rotation} {...dragProps({ kind: "jack", id: j.id })}>
+                <Rect x={-9} y={-9} width={18} height={18} cornerRadius={3} fill={c.panel} stroke={sel ? c.focus : c.net} strokeWidth={sel ? 3 : 2} />
+                {/* RJ45 plug outline */}
+                <Line points={[-5, 4, -5, -2, -2, -2, -2, -5, 2, -5, 2, -2, 5, -2, 5, 4, -5, 4]} stroke={c.net} strokeWidth={1.5} listening={false} />
+                <Line points={[-2.5, 4, -2.5, 1, 0, 1, 0, 4, 2.5, 4, 2.5, 1]} stroke={c.net} strokeWidth={1} listening={false} />
+              </Group>
+            );
+          })}
 
           {/* outlets on top so they are always clickable */}
           {venue.outlets.map((o) => {
@@ -467,6 +617,47 @@ export function FloorPlan(props: FloorPlanProps) {
               </Group>
             );
           })}
+
+          {/* handles for reshaping the selected cable */}
+          {interactive && props.selection?.kind === "cable" && (() => {
+            const cn = connections.find((x) => x.key === props.selection!.id);
+            if (!cn || !props.onRouteChange) return null;
+            const pts = [cn.from, ...cn.waypoints, cn.to];
+            const emit = (next: Point[]) => props.onRouteChange!(cn.key, next);
+            const grid = (v: number) => snapTo(v, props.snap);
+            return (
+              <>
+                {pts.slice(0, -1).map((p, i) => {
+                  const q = pts[i + 1]!;
+                  const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
+                  return (
+                    <Group key={`mid${i}`} x={mx * PPF} y={my * PPF} onClick={(e) => { e.cancelBubble = true; emit([...cn.waypoints.slice(0, i), { x: grid(mx), y: grid(my) }, ...cn.waypoints.slice(i)]); }}>
+                      <Circle radius={7} fill={c.panel} stroke={c.focus} strokeWidth={1.5} opacity={0.9} />
+                      <Line points={[-3.5, 0, 3.5, 0]} stroke={c.focus} strokeWidth={1.5} listening={false} />
+                      <Line points={[0, -3.5, 0, 3.5]} stroke={c.focus} strokeWidth={1.5} listening={false} />
+                    </Group>
+                  );
+                })}
+                {cn.waypoints.map((w, i) => (
+                  <Circle key={`wp${i}`} x={w.x * PPF} y={w.y * PPF} radius={7} fill={c.focus} stroke={c.panel} strokeWidth={2} draggable
+                    onDragEnd={(e) => {
+                      const pt = { x: grid(e.target.x() / PPF), y: grid(e.target.y() / PPF) };
+                      e.target.position({ x: pt.x * PPF, y: pt.y * PPF });
+                      emit(cn.waypoints.map((x, j) => (j === i ? pt : x)));
+                    }}
+                    onDblClick={(e) => { e.cancelBubble = true; emit(cn.waypoints.filter((_, j) => j !== i)); }}
+                  />
+                ))}
+              </>
+            );
+          })()}
+
+          {/* alignment guides while dragging */}
+          {snapGuides.map((g, i) => (
+            <Line key={`sg${i}`}
+              points={g.axis === "x" ? [g.pos * PPF, g.from * PPF - 12, g.pos * PPF, g.to * PPF + 12] : [g.from * PPF - 12, g.pos * PPF, g.to * PPF + 12, g.pos * PPF]}
+              stroke={c.danger} strokeWidth={1} dash={[5, 4]} strokeScaleEnabled={false} listening={false} />
+          ))}
 
           {/* room being drawn */}
           {tool === "room" && props.roomDraft.length > 0 && (() => {

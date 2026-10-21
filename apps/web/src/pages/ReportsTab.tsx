@@ -1,4 +1,4 @@
-import { ethernetRuns, cordRuns, shoppingSummary } from "@lpd/shared";
+import { ethernetRuns, cordRuns, layoutWarnings, powerRuns, shoppingSummary } from "@lpd/shared";
 import { Gauge, LevelBadge, formatWatts } from "../lib/ui";
 import { SeatMap } from "../panels/SeatMap";
 import { devicePorts, outletName, seatName } from "../store/eventOps";
@@ -9,8 +9,10 @@ export function ReportsTab({ eventName }: { eventName: string }) {
   const { venue, doc, people, profiles, report, seatLabels } = useEventCtx();
   const update = useEventDoc((s) => s.update);
   const shopping = shoppingSummary(venue, doc);
-  const eth = ethernetRuns(doc);
+  const eth = ethernetRuns(doc, venue);
   const cords = cordRuns(venue, doc);
+  const pwr = powerRuns(venue, doc);
+  const layout = layoutWarnings(venue, doc);
   const switches = doc.devices.filter((d) => devicePorts(doc, d.id, profiles) > 0);
 
   const needsPort = doc.attendance.filter((a) => {
@@ -76,9 +78,18 @@ export function ReportsTab({ eventName }: { eventName: string }) {
               </tbody>
             </table>
           )}
-          {report.warnings.length > 0 && (
+          {pwr.length > 0 && (
+            <details>
+              <summary>Power cable runs ({pwr.length})</summary>
+              <table className="table">
+                <thead><tr><th>From</th><th>To</th><th className="num">Cable</th></tr></thead>
+                <tbody>{pwr.map((r) => <tr key={r.key}><td>{r.from}</td><td>{r.to}</td><td className="num">{r.lengthFt} ft</td></tr>)}</tbody>
+              </table>
+            </details>
+          )}
+          {report.warnings.length + layout.length > 0 && (
             <ul className="warnlist" style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {report.warnings.map((w, i) => <li key={i}><span className="dot-line"><span className={`badge ${w.level}`}>{w.level === "danger" ? "Problem" : "Warning"}</span> {w.message}</span></li>)}
+              {[...report.warnings, ...layout].map((w, i) => <li key={i}><span className="dot-line"><span className={`badge ${w.level}`}>{w.level === "danger" ? "Problem" : "Warning"}</span> {w.message}</span></li>)}
             </ul>
           )}
         </section>
@@ -116,6 +127,17 @@ export function ReportsTab({ eventName }: { eventName: string }) {
             </tbody>
           </table>
           {shopping.ethernet.length + shopping.cords.length + shopping.strips + doc.devices.length === 0 && <div className="empty">Nothing to buy yet. Wire seats to switches and strips first.</div>}
+          {eth.length > 0 && (
+            <details>
+              <summary>Ethernet runs ({eth.length})</summary>
+              <table className="table">
+                <thead><tr><th>From</th><th>To</th><th className="num">Cable</th></tr></thead>
+                <tbody>
+                  {eth.map((r) => <tr key={r.id}><td>{r.from}</td><td>{r.to}</td><td className="num">{r.lengthFt} ft</td></tr>)}
+                </tbody>
+              </table>
+            </details>
+          )}
           <p className="muted">{eth.length} ethernet runs and {cords.filter((c) => c.lengthFt > 0).length} cords. Lengths add 20% slack plus 3 ft of drop at each end, rounded up to a standard size.</p>
         </section>
 

@@ -50,4 +50,23 @@ describe("wallDimensions", () => {
     expect(top.spans[0]!.mid).toEqual({ x: 2.75, y: 0 });
     expect(top.outward).toEqual({ x: 0, y: -1 });
   });
+
+  it("labels windows and garage doors as their own kind of span", () => {
+    const top = wallDimensions(room, [
+      { x: 4, y: 0, width: 4, kind: "window" },
+      { x: 14, y: 0, width: 9, kind: "garage" },
+    ])[0]!;
+    expect(top.spans.map((s) => [s.kind, s.lengthFt])).toEqual([
+      ["wall", 2], ["window", 4], ["wall", 3.5], ["garage", 9], ["wall", 1.5],
+    ]);
+  });
+
+  it("mixes doors, windows and garage doors in order along a wall", () => {
+    const top = wallDimensions(room, [
+      { x: 3, y: 0, width: 3, kind: "door" },
+      { x: 9, y: 0, width: 4, kind: "window" },
+    ])[0]!;
+    expect(top.spans.map((s) => s.kind)).toEqual(["wall", "door", "wall", "window", "wall"]);
+  });
 });
+

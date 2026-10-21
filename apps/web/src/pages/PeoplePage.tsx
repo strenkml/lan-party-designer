@@ -1,19 +1,21 @@
 import { useState } from "react";
-import type { DeviceProfile, Person } from "@lpd/shared";
+import type { DeviceProfile, Person, Preset } from "@lpd/shared";
 import { api } from "../lib/api";
-import { invalidate, usePeople, useProfiles } from "../lib/queries";
-import { NumberField, TextField, toast } from "../lib/ui";
+import { invalidate, usePeople, usePresets, useProfiles } from "../lib/queries";
+import { NameDialog, NumberField, TextField, toast } from "../lib/ui";
 import { TopBar } from "../panels/TopBar";
 
 export function PeoplePage() {
   const people = usePeople();
   const profiles = useProfiles();
+  const presets = usePresets();
   return (
     <div className="app">
-      <TopBar crumb={<strong>People & devices</strong>} />
+      <TopBar />
       <main className="page">
         <div className="stack">
           <PeopleCard people={people.data ?? []} profiles={profiles.data ?? []} />
+          <PresetsCard presets={presets.data ?? []} />
           <ProfilesCard profiles={profiles.data ?? []} />
         </div>
       </main>
@@ -281,6 +283,48 @@ function ProfilesCard({ profiles }: { profiles: DeviceProfile[] }) {
           Add profile
         </button>
       </form>
+    </section>
+  );
+}
+
+function PresetsCard({ presets }: { presets: Preset[] }) {
+  const [renaming, setRenaming] = useState<Preset | null>(null);
+  const run = (fn: () => Promise<unknown>) =>
+    fn().then(() => invalidate("presets")).catch((e) => toast(e.message));
+  const describe = (p: Preset) =>
+    p.kind === "table"
+      ? `${p.spec.shape === "round" ? `${p.spec.width} ft round` : `${p.spec.width} × ${p.spec.depth} ft`}, ${p.spec.seats} ${p.spec.shape === "round" ? "seats" : "seats per side"}${p.spec.seatSides !== "both" && p.spec.shape === "rect" ? ", one side" : ""}`
+      : `${p.spec.sockets} outlets, ${p.spec.amps}A`;
+  return (
+    <section className="card stack" aria-labelledby="presets-h">
+      <h2 id="presets-h">Your tables and power strips</h2>
+      <p className="muted">
+        Save a table or strip from the event editor to reuse it by name. Custom switches are listed under Device profiles below.
+      </p>
+      {presets.length === 0 ? (
+        <div className="empty">Nothing saved yet. Select a table or power strip in an event and choose Save as a custom table or strip.</div>
+      ) : (
+        <ul className="list">
+          {presets.map((p) => (
+            <li key={p.id}>
+              <div className="grow"><strong>{p.name}</strong><div className="muted">{p.kind === "table" ? "Table" : "Power strip"}: {describe(p)}</div></div>
+              <button className="btn small" onClick={() => setRenaming(p)}>Rename</button>
+              <button className="btn small danger" onClick={() => confirm(`Delete "${p.name}"? Items already placed in events are not affected.`) && run(() => api.deletePreset(p.id))}>Delete</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {renaming && (
+        <NameDialog
+          title="Rename"
+          initial={renaming.name}
+          action="Save name"
+          onClose={() => setRenaming(null)}
+          onSubmit={async (name) => {
+            await run(() => api.savePreset(renaming.id, { ...renaming, name } as never));
+          }}
+        />
+      )}
     </section>
   );
 }

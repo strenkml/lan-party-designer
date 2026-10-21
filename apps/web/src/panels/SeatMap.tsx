@@ -1,5 +1,5 @@
 import type { EventDoc, VenueDoc } from "@lpd/shared";
-import { CIRCUIT_COLORS } from "../canvas/FloorPlan";
+import { CIRCUIT_COLORS, ZONE_COLORS } from "../canvas/FloorPlan";
 
 type Tint = "done" | "partial" | "none";
 
@@ -20,8 +20,12 @@ export function SeatMap(props: {
       { x: t.x + t.width / 2 + 2, y: t.y + t.depth / 2 + 2 },
     ]),
     ...event.seats,
+    ...event.zones.flatMap((z) => [{ x: z.x - z.width / 2, y: z.y - z.depth / 2 }, { x: z.x + z.width / 2, y: z.y + z.depth / 2 }]),
     ...venue.doors,
+    ...venue.windows,
+    ...venue.garageDoors,
     ...venue.outlets,
+    ...venue.jacks,
     ...event.devices,
     ...event.strips,
   ];
@@ -57,10 +61,36 @@ export function SeatMap(props: {
             </g>
           </g>
         ))}
+        {venue.windows.map((w) => (
+          <g key={w.id} transform={`translate(${w.x} ${w.y}) rotate(${w.rotation})`}>
+            <rect x={-w.width / 2} y={-0.2} width={w.width} height={0.4} fill="var(--floor)" />
+            <line x1={-w.width / 2} y1={0} x2={w.width / 2} y2={0} stroke="var(--net)" strokeWidth={0.14} />
+          </g>
+        ))}
+        {venue.garageDoors.map((g) => (
+          <g key={g.id} transform={`translate(${g.x} ${g.y}) rotate(${g.rotation})`}>
+            <rect x={-g.width / 2} y={-0.2} width={g.width} height={0.4} fill="var(--floor)" />
+            <line x1={-g.width / 2} y1={0} x2={g.width / 2} y2={0} stroke="var(--ink)" strokeWidth={0.18} strokeDasharray="0.5 0.25" />
+          </g>
+        ))}
+        {venue.jacks.map((j) => (
+          <g key={j.id} transform={`translate(${j.x} ${j.y}) rotate(${j.rotation})`}>
+            <rect x={-0.45} y={-0.45} width={0.9} height={0.9} rx={0.15} fill="var(--panel)" stroke="var(--net)" strokeWidth={0.12} />
+          </g>
+        ))}
         {venue.outlets.map((o) => {
           const i = venue.circuits.findIndex((c) => c.id === o.circuitId);
           return (
             <circle key={o.id} cx={o.x} cy={o.y} r={0.5} fill={i >= 0 ? CIRCUIT_COLORS[i % CIRCUIT_COLORS.length] : "var(--panel)"} stroke="var(--ink-2)" strokeWidth={0.1} strokeDasharray={i >= 0 ? undefined : "0.2 0.15"} />
+          );
+        })}
+        {event.zones.map((z) => {
+          const color = ZONE_COLORS[z.kind] ?? ZONE_COLORS.other!;
+          return (
+            <g key={z.id} transform={`translate(${z.x} ${z.y}) rotate(${z.rotation})`}>
+              <rect x={-z.width / 2} y={-z.depth / 2} width={z.width} height={z.depth} fill={color} fillOpacity={0.2} stroke={color} strokeWidth={0.1} strokeDasharray={z.kind === "walkway" ? "0.5 0.3" : undefined} />
+              <text textAnchor="middle" y={0.3} fontSize={0.9} fontWeight={600} fill="var(--ink)" opacity={0.75} transform={`rotate(${-z.rotation})`}>{z.label || z.kind}</text>
+            </g>
           );
         })}
         {event.tables.map((t) => (
@@ -74,9 +104,14 @@ export function SeatMap(props: {
           </g>
         ))}
         {event.devices.map((d) => (
-          <g key={d.id}>
-            <rect x={d.x - 1.1} y={d.y - 0.55} width={2.2} height={1.1} rx={0.2} fill="var(--panel)" stroke="var(--net)" strokeWidth={0.14} />
-            <text x={d.x} y={d.y + 0.3} textAnchor="middle" fontSize={0.8} fill="var(--ink)">{d.label}</text>
+          <g key={d.id} transform={`translate(${d.x} ${d.y})`}>
+            <rect x={-1.6} y={-0.55} width={3.2} height={1.1} rx={0.2} fill="var(--panel)" stroke="var(--net)" strokeWidth={0.14} transform={`rotate(${d.rotation})`} />
+            <text y={0.3} textAnchor="middle" fontSize={0.8} fill="var(--ink)">{d.label}</text>
+          </g>
+        ))}
+        {event.strips.map((st) => (
+          <g key={st.id} transform={`translate(${st.x} ${st.y}) rotate(${st.rotation})`}>
+            <rect x={-1.2} y={-0.4} width={2.4} height={0.8} rx={0.15} fill="var(--panel)" stroke="var(--power)" strokeWidth={0.12} />
           </g>
         ))}
         {event.seats.map((s) => {

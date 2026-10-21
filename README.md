@@ -4,8 +4,9 @@ A self-hosted planner for LAN parties of 4 to 20 people. Lay out the room and ta
 
 ## What it does
 
-- **Venues** hold the reusable room: outline, doors, obstacles, outlets and which breaker each outlet is on. Upload a photo or sketch of the floor plan and calibrate its scale by marking two points a known distance apart.
-- **Events** place tables (6 ft, 8 ft, round, custom) with seats generated along the sides, plus power strips, extension cords, switches and routers. Start a new event from a previous event's layout.
+- **Venues** hold the reusable room: outline, doors, windows, garage doors, obstacles, outlets (with plug count and height off the floor), network jacks and which breaker each outlet is on. Doors, windows, outlets and jacks snap onto walls, and wall and opening dimensions can be shown. Upload a photo or sketch of the floor plan and calibrate its scale by marking two points a known distance apart.
+- **Events** place zones (walkways, food, storage, stage), tables (6 ft, 8 ft, round, custom) with seats generated along the sides, plus power strips, extension cords, switches and routers. Start a new event from a previous event's layout. Items snap to each other and the walls while you drag (hold Alt to skip), shift-click selects several objects, and a group moves as one. Tables and power strips can be saved as named presets, and custom switches are saved as device profiles.
+- **Cables** can be routed by hand: click any ethernet or power cable, then drag its bend points around furniture. Lengths follow the route, use each outlet's height for the drop at the wall, and feed the shopping list.
 - **Power** is circuit aware: outlet, optional extension cord, power strip, devices. Each strip, cord, outlet and breaker is checked at 80% of its rating (typical draw) and 100% (peak draw). Daisy-chained strips, socket overflow and loads on outlets with an unknown breaker are flagged.
 - **Network** maps every seat to a switch port, with uplinks between switches, and estimates cable lengths (Manhattan distance, 20% slack, 3 ft drop at each end, rounded up to standard lengths).
 - **Roster** is a global people directory with their usual gear. Each event tracks RSVP, seat and per-event device changes. Drag guests onto seats on the plan or pick a seat from a list.
@@ -24,6 +25,8 @@ docker compose up -d --build
 ```
 
 Open http://localhost:3000. Data lives in the `lan-party-data` volume, mounted at `/data` (SQLite database plus uploaded floor plan images). Back up by copying that directory.
+
+**Upgrading:** pull the new image and restart. Database migrations run automatically at startup, and if an upgrade will change an existing database the app first saves a copy next to it (`lan-party.db.bak-<date>`). Saved events and venues from older versions load with sensible defaults for anything added since, and exports from older versions can still be imported. To go back to an older release, restore one of those backup files.
 
 Build a multi-architecture image (for a Raspberry Pi or NAS):
 

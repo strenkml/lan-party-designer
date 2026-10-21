@@ -98,4 +98,37 @@ describe("api", () => {
     await call("PUT", `/api/people/${created.id}`, { name: "Ann B", devices: [] });
     expect((await call("GET", "/api/people")).body[0].name).toBe("Ann B");
   });
+
+  it("saves, lists, renames and deletes custom table and strip presets", async () => {
+    const table = await call("POST", "/api/presets", {
+      kind: "table",
+      name: "Kitchen island",
+      spec: { shape: "rect", width: 7, depth: 3, seats: 3, seatSides: "far" },
+    });
+    expect(table.status).toBe(201);
+    const strip = (await call("POST", "/api/presets", { kind: "strip", name: "Orange cube", spec: { sockets: 3, amps: 10 } })).body;
+    const list = (await call("GET", "/api/presets")).body;
+    expect(list.map((p: any) => p.name).sort()).toEqual(["Kitchen island", "Orange cube"]);
+    expect(list.find((p: any) => p.name === "Kitchen island").spec.seatWidthIn).toBe(36);
+
+    await call("PUT", `/api/presets/${strip.id}`, { kind: "strip", name: "Orange cube v2", spec: { sockets: 4, amps: 10 } });
+    expect((await call("GET", "/api/presets")).body.some((p: any) => p.name === "Orange cube v2")).toBe(true);
+
+    await call("DELETE", `/api/presets/${table.body.id}`);
+    expect((await call("GET", "/api/presets")).body).toHaveLength(1);
+  });
+
+  it("rejects a preset whose spec does not match its kind", async () => {
+    const res = await call("POST", "/api/presets", { kind: "strip", name: "Bad", spec: { width: 3 } });
+    expect(res.status).toBe(400);
+  });
+
+  it("carries presets through export and import", async () => {
+    const { event } = await makeEvent();
+    await call("POST", "/api/presets", { kind: "strip", name: "Long bar", spec: { sockets: 10, amps: 15 } });
+    const exported = (await call("GET", `/api/events/${event.id}/export`)).body;
+    expect(exported.presets).toHaveLength(1);
+    expect((await call("POST", "/api/import", exported)).status).toBe(201);
+  });
 });
+
