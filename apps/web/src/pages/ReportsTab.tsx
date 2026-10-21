@@ -57,7 +57,7 @@ export function ReportsTab({ eventName }: { eventName: string }) {
               </select>
             </label>
           </div>
-          <p className="muted">Declined guests are never counted. Filling empty seats shows the worst case if every seat is used.</p>
+          <p className="muted">Declined guests are never counted. Filling empty seats shows the worst case if every seat is used. A PC placeholder also gets a 27 inch monitor.</p>
         </section>
 
         <section className="card stack" aria-labelledby="power-h">

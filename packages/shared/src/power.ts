@@ -78,6 +78,9 @@ export interface PowerReport {
 
 const NEAR_LIMIT = 0.8;
 
+/** Monitor added next to a placeholder PC, matching the starter gear for a new guest. */
+export const PLACEHOLDER_MONITOR_ID = "monitor-27";
+
 /** Whether a guest with this RSVP counts toward planning under the event's mode. */
 export function isCounted(rsvp: Rsvp, mode: EventSettings["rsvpMode"]): boolean {
   return rsvp === "confirmed" || (rsvp === "invited" && mode === "confirmedInvited");
@@ -141,6 +144,12 @@ export function computePowerLoad({ venue, event, people, profiles }: PowerInputs
   const placeholder = event.settings.placeholderProfileId
     ? profileById.get(event.settings.placeholderProfileId)
     : undefined;
+  // A placeholder PC comes with a monitor; a laptop does not.
+  const placeholderGear = placeholder
+    ? [placeholder, ...(placeholder.kind === "pc" ? [profileById.get(PLACEHOLDER_MONITOR_ID)] : [])].filter(
+        (p): p is DeviceProfile => !!p,
+      )
+    : [];
 
   // Load per seat.
   const seatLoads: PowerReport["seatLoads"] = {};
@@ -149,11 +158,11 @@ export function computePowerLoad({ venue, event, people, profiles }: PowerInputs
     if (refs) {
       const watts = refs.reduce((sum, r) => add(sum, refWatts(r, profileById)), ZERO);
       seatLoads[seat.id] = { ...watts, deviceCount: refs.length };
-    } else if (placeholder) {
+    } else if (placeholderGear.length > 0) {
       seatLoads[seat.id] = {
-        typicalW: placeholder.typicalW,
-        peakW: placeholder.peakW,
-        deviceCount: 1,
+        typicalW: placeholderGear.reduce((n, p) => n + p.typicalW, 0),
+        peakW: placeholderGear.reduce((n, p) => n + p.peakW, 0),
+        deviceCount: placeholderGear.length,
       };
     } else {
       seatLoads[seat.id] = { ...ZERO, deviceCount: 0 };

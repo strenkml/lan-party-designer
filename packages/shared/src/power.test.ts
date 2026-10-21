@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computePowerLoad } from "./power";
+import { PLACEHOLDER_MONITOR_ID, computePowerLoad } from "./power";
 import {
   EventDoc,
   VenueDoc,
@@ -165,6 +165,32 @@ describe("computePowerLoad", () => {
       profiles,
     });
     expect(report.seatLoads["s1"]).toMatchObject({ typicalW: 360, peakW: 600 });
+  });
+
+  describe("placeholder seats", () => {
+    const withMonitor = [...profiles, { id: PLACEHOLDER_MONITOR_ID, name: "Monitor 27", kind: "monitor" as const, typicalW: 35, peakW: 55, ports: 0 }];
+    const run = (placeholderProfileId: string, profs = withMonitor) =>
+      computePowerLoad({
+        venue: venue(),
+        event: event({ attendance: [], settings: { placeholderProfileId } } as never),
+        people: [],
+        profiles: profs,
+      });
+
+    it("get a PC and a monitor, using two sockets", () => {
+      const report = run("pc");
+      expect(report.seatLoads["s1"]).toMatchObject({ typicalW: 395, peakW: 655, deviceCount: 2 });
+      expect(report.strips[0]).toMatchObject({ socketsUsed: 2 });
+    });
+
+    it("stay a single device for a laptop", () => {
+      const report = run("laptop", [...withMonitor, { id: "laptop", name: "Laptop", kind: "laptop", typicalW: 60, peakW: 100, ports: 0 }]);
+      expect(report.seatLoads["s1"]).toMatchObject({ typicalW: 60, deviceCount: 1 });
+    });
+
+    it("skip the monitor when that profile no longer exists", () => {
+      expect(run("pc", profiles).seatLoads["s1"]).toMatchObject({ typicalW: 360, deviceCount: 1 });
+    });
   });
 
   it("warns when a seat has devices but no strip", () => {
