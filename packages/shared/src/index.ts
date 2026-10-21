@@ -10,3 +10,6 @@ export * from "./presets";
 export * from "./connections";
 export * from "./geometry";
 export * from "./wiring";
+export * from "./shopping";
+export * from "./heat";
+export * from "./bandwidth";

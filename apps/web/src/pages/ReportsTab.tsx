@@ -1,4 +1,4 @@
-import { ethernetRuns, cordRuns, layoutWarnings, powerRuns, shoppingSummary } from "@lpd/shared";
+import { STANDARD_LENGTHS_FT, WINDOW_UNIT_BTU, cordRuns, ethernetRuns, heatLoad, layoutWarnings, networkLoad, powerRuns, shoppingSummary, shoppingWithOwned } from "@lpd/shared";
 import { Gauge, LevelBadge, formatWatts } from "../lib/ui";
 import { SeatMap } from "../panels/SeatMap";
 import { devicePorts, outletName, seatName } from "../store/eventOps";
@@ -13,6 +13,17 @@ export function ReportsTab({ eventName }: { eventName: string }) {
   const cords = cordRuns(venue, doc);
   const pwr = powerRuns(venue, doc);
   const layout = layoutWarnings(venue, doc);
+  const heat = heatLoad(report.total);
+  const net = networkLoad(doc, new Map(profiles.map((p) => [p.id, p.kind])));
+  const shopRows = shoppingWithOwned(shopping, doc.devices.length, doc.settings.owned);
+  const setOwned = (group: "ethernet" | "cords" | "strips" | "switches", lengthFt: number | undefined, n: number) =>
+    update((d) => {
+      const count = Math.max(0, Math.round(n));
+      if (group === "strips" || group === "switches") d.settings.owned[group] = count;
+      else if (count === 0) delete d.settings.owned[group][String(lengthFt)];
+      else d.settings.owned[group][String(lengthFt)] = count;
+    });
+  const levelBadge = { ok: "OK", warn: "Check", danger: "Slow" } as const;
   const switches = doc.devices.filter((d) => devicePorts(doc, d.id, profiles) > 0);
 
   const needsPort = doc.attendance.filter((a) => {
@@ -58,6 +69,12 @@ export function ReportsTab({ eventName }: { eventName: string }) {
                   detail={`${c.outletIds.length} outlets: ${c.outletIds.map((o) => outletName(venue, o)).join(", ") || "none"}`} />
               ))}
             </div>
+          )}
+          {report.total.peakW > 0 && (
+            <p className="muted" style={{ margin: 0 }}>
+              Heat in the room: {Math.round(heat.typicalBtu).toLocaleString()} BTU/h typical, {Math.round(heat.peakBtu).toLocaleString()} BTU/h at peak
+              ({heat.peakTons.toFixed(1)} tons of cooling, about {heat.peakWindowUnits} window air conditioners of {WINDOW_UNIT_BTU.toLocaleString()} BTU/h). Plan for ventilation or cooling.
+            </p>
           )}
           {report.unverified.peakW > 0 && (
             <p className="badge warn" style={{ justifySelf: "start" }}>{formatWatts(report.unverified.typicalW)} typical is on outlets with an unknown breaker. Tag them in the venue editor to verify.</p>
@@ -112,21 +129,67 @@ export function ReportsTab({ eventName }: { eventName: string }) {
               </div>
             );
           })}
+          <label className="field" style={{ maxWidth: 260 }}>
+            Internet speed (Mbps)
+            <input type="number" min={0} step={50} value={doc.settings.internetMbps ?? ""} placeholder="Unknown"
+              onChange={(e) => { const n = parseFloat(e.target.value); update((d) => void (d.settings.internetMbps = Number.isFinite(n) && n > 0 ? n : null)); }} />
+          </label>
+          {net.internet && <p className="muted" style={{ margin: 0 }}>{net.internet.seats} wired seats share the connection: about {Math.round(net.internet.perSeatMbps)} Mbps each if all download at once.</p>}
+          {net.uplinks.length > 0 && (
+            <table className="table">
+              <thead><tr><th>Uplink</th><th className="num">Seats behind it</th><th className="num">Link speed</th><th className="num">Per seat if all busy</th><th>Status</th></tr></thead>
+              <tbody>
+                {net.uplinks.map((u) => (
+                  <tr key={u.id}>
+                    <td>{u.upstream} to {u.downstream}</td>
+                    <td className="num">{u.seats}</td>
+                    <td className="num">{u.capacityMbps >= 1000 ? `${u.capacityMbps / 1000} Gbps` : `${u.capacityMbps} Mbps`}</td>
+                    <td className="num">{Math.round(u.perSeatMbps)} Mbps</td>
+                    <td><span className={`badge ${u.level}`}>{levelBadge[u.level]}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {net.warnings.length > 0 && (
+            <ul className="warnlist" style={{ listStyle: "none", padding: 0, margin: 0 }}>
+              {net.warnings.map((w, i) => <li key={i}><span className="dot-line"><span className={`badge ${w.level}`}>{w.level === "danger" ? "Problem" : "Warning"}</span> {w.message}</span></li>)}
+            </ul>
+          )}
           {needsPort.length > 0 && <p className="badge warn" style={{ justifySelf: "start" }}>{needsPort.length} seated guests need ethernet but have no port: {needsPort.map((a) => people.find((p) => p.id === a.personId)?.name).join(", ")}</p>}
         </section>
 
         <section className="card stack" aria-labelledby="shop-h">
           <h2 id="shop-h">Shopping list</h2>
           <table className="table">
-            <thead><tr><th>Item</th><th className="num">Quantity</th></tr></thead>
+            <thead><tr><th>Item</th><th className="num">Need</th><th className="num">Have</th><th className="num">Buy</th></tr></thead>
             <tbody>
-              {shopping.ethernet.map((l) => <tr key={`e${l.lengthFt}`}><td>Ethernet cable, {l.lengthFt} ft</td><td className="num">{l.count}</td></tr>)}
-              {shopping.cords.map((l) => <tr key={`c${l.lengthFt}`}><td>Extension cord, {l.lengthFt} ft</td><td className="num">{l.count}</td></tr>)}
-              {shopping.strips > 0 && <tr><td>Power strips</td><td className="num">{shopping.strips}</td></tr>}
-              {doc.devices.length > 0 && <tr><td>Switches and routers</td><td className="num">{doc.devices.length}</td></tr>}
+              {shopRows.map((r) => (
+                <tr key={r.id}>
+                  <td>{r.label}</td>
+                  <td className="num">{r.need}</td>
+                  <td className="num">
+                    <input type="number" min={0} step={1} style={{ width: 64 }} aria-label={`Owned: ${r.label}`} value={r.have}
+                      onChange={(e) => { const n = parseInt(e.target.value, 10); if (Number.isFinite(n)) setOwned(r.group, r.lengthFt, n); }} />
+                  </td>
+                  <td className="num"><strong>{r.buy}</strong></td>
+                </tr>
+              ))}
             </tbody>
           </table>
-          {shopping.ethernet.length + shopping.cords.length + shopping.strips + doc.devices.length === 0 && <div className="empty">Nothing to buy yet. Wire seats to switches and strips first.</div>}
+          {shopRows.length === 0 && <div className="empty">Nothing to buy yet. Wire seats to switches and strips first.</div>}
+          <div className="row no-print">
+            {(["ethernet", "cords"] as const).map((group) => (
+              <label key={group} className="field">
+                {group === "ethernet" ? "Add an ethernet cable you own" : "Add an extension cord you own"}
+                <select value="" onChange={(e) => e.target.value && setOwned(group, Number(e.target.value), (doc.settings.owned[group][e.target.value] ?? 0) + 1)}>
+                  <option value="">Length…</option>
+                  {STANDARD_LENGTHS_FT.map((l) => <option key={l} value={l}>{l} ft</option>)}
+                </select>
+              </label>
+            ))}
+          </div>
+          <p className="muted no-print">Gear you own only covers items of the same length. Strips and switches count one for one.</p>
           {eth.length > 0 && (
             <details>
               <summary>Ethernet runs ({eth.length})</summary>

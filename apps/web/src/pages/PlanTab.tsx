@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { BUILTIN_STRIP_PRESETS, applyWire, autoWire, cableConnections, wireOptions, layoutWarnings, type GroupMember, type Level, type Point, type ZoneKind } from "@lpd/shared";
 import { FloorPlan, type Selection, type Tool } from "../canvas/FloorPlan";
 import { useEditorKeys } from "../lib/keys";
@@ -30,7 +30,7 @@ const ZONE_PRESETS: Record<ZoneKind, { label: string; width: number; depth: numb
   other: { label: "Zone", width: 6, depth: 6 },
 };
 
-export function PlanTab() {
+export function PlanTab({ eventName = "plan" }: { eventName?: string }) {
   const { venue, doc, people, profiles, report, seatLabels } = useEventCtx();
   const { update, undo, redo } = useEventDoc.getState();
   const canUndo = useEventDoc((s) => s.past.length > 0);
@@ -45,6 +45,7 @@ export function PlanTab() {
   const [showPower, setShowPower] = useState(true);
   const [showNet, setShowNet] = useState(true);
   const [showDimensions, setShowDimensions] = useState(false);
+  const exportRef = useRef<(() => HTMLCanvasElement | null) | null>(null);
   const [snapObjects, setSnapObjects] = useState(true);
   const [preset, setPreset] = useState("folding-6");
   const [profileId, setProfileId] = useState("switch-16");
@@ -163,7 +164,7 @@ export function PlanTab() {
     }
     if (kind === "device") {
       const p = profiles.find((x) => x.id === profileId);
-      update((d) => void d.devices.push({ id, label: `${p?.kind === "router" ? "Router" : "Switch"} ${d.devices.length + 1}`, profileId, x: pt.x, y: pt.y, rotation: 0, jackId: null, pluggedInto: null }));
+      update((d) => void d.devices.push({ id, label: `${p?.kind === "router" ? "Router" : "Switch"} ${d.devices.length + 1}`, profileId, x: pt.x, y: pt.y, rotation: 0, jackId: null, portMbps: 1000, pluggedInto: null }));
     }
     if (kind === "zone") {
       const size = ZONE_PRESETS[zoneKind];
@@ -420,6 +421,20 @@ export function PlanTab() {
     }
   };
 
+  const exportPng = () => {
+    const canvas = exportRef.current?.();
+    if (!canvas) { toast("Nothing to export yet."); return; }
+    canvas.toBlob((blob) => {
+      if (!blob) { toast("Could not create the image."); return; }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${eventName.replace(/[^\w.-]+/g, "-").replace(/^-+|-+$/g, "") || "plan"}.png`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  };
+
   const runAutoWire = () => {
     const result = autoWire({ venue, event: doc, people, profiles });
     update((d) => void (d.seats = result.event.seats));
@@ -434,6 +449,7 @@ export function PlanTab() {
     if (doc.strips.some((s) => s.id === refId)) return { kind: "strip", id: refId };
     if (doc.seats.some((s) => s.id === refId)) return { kind: "seat", id: refId };
     if (venue.outlets.some((s) => s.id === refId)) return { kind: "outlet", id: refId };
+    if (refId.startsWith("eth:") || refId.startsWith("pwr:")) return { kind: "cable", id: refId };
     return null;
   };
 
@@ -478,6 +494,7 @@ export function PlanTab() {
             onRoomVertexRemove={() => {}}
             onRoomFinish={() => {}}
             onDropPerson={onDropPerson}
+            exportRef={exportRef}
           />
           <div className="roster-dock no-print">
             <header>Guests <span className="muted">{guests.length}</span></header>
@@ -508,6 +525,7 @@ export function PlanTab() {
           <label className="check field"><input type="checkbox" checked={showPower} onChange={(e) => setShowPower(e.target.checked)} /><span style={{ color: "var(--power)" }}>Show power wiring</span></label>
           <label className="check field"><input type="checkbox" checked={showNet} onChange={(e) => setShowNet(e.target.checked)} /><span style={{ color: "var(--net)" }}>Show network cables</span></label>
           <label className="check field"><input type="checkbox" checked={showDimensions} onChange={(e) => setShowDimensions(e.target.checked)} />Show wall and opening dimensions</label>
+          <button className="btn" onClick={exportPng}>Export plan as PNG</button>
           {tool === "table" && (
             <label className="field">Table to place
               <select value={preset} onChange={(e) => setPreset(e.target.value)}>

@@ -257,7 +257,7 @@ export function applyWire(doc: EventDoc, venue: VenueDoc, profiles: DeviceProfil
     seat.netPort = port;
     key = `eth:${seat.id}`;
   } else if (a.kind === "device" && b.kind === "device") {
-    const up = { id: rid("up"), fromDeviceId: a.id, toDeviceId: b.id, overrideFt: null };
+    const up = { id: rid("up"), fromDeviceId: a.id, toDeviceId: b.id, overrideFt: null, mbps: null };
     doc.uplinks.push(up);
     key = `eth:${up.id}`;
   } else if (a.kind === "device" && b.kind === "jack") {

@@ -40,6 +40,18 @@ describe("documents saved by older releases", () => {
     expect([event.strips[0]!.rotation, event.devices[0]!.rotation]).toEqual([0, 0]);
   });
 
+  it("get no owned gear, unknown internet speed and gigabit ports when saved before those existed", () => {
+    const event = EventDoc.parse({
+      ...oldEvent,
+      devices: [{ id: "sw1", label: "Sw", profileId: "switch-16", x: 2, y: 2, rotation: 0, jackId: null, pluggedInto: null }],
+      uplinks: [{ id: "u1", fromDeviceId: "sw1", toDeviceId: "sw2", overrideFt: null }],
+    });
+    expect(event.settings.owned).toEqual({ ethernet: {}, cords: {}, strips: 0, switches: 0 });
+    expect(event.settings.internetMbps).toBeNull();
+    expect(event.devices[0]!.portMbps).toBe(1000);
+    expect(event.uplinks[0]!.mbps).toBeNull();
+  });
+
   it("keep their data when the exported file is imported into a newer release", () => {
     const bundle = EventBundle.parse({
       version: 1,

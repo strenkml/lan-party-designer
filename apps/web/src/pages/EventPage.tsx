@@ -146,7 +146,7 @@ function EventShell(props: {
         />
         {active === "plan" && (
           <>
-            <PlanTab />
+            <PlanTab eventName={name} />
             <MobileView />
           </>
         )}

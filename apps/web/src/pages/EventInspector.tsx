@@ -51,6 +51,14 @@ export function EventInspector({ selection, clear }: { selection: Selection | nu
 }
 
 
+const LINK_SPEEDS = [10, 100, 1000, 2500, 10000];
+const speedLabel = (n: number) => (n >= 1000 ? `${n / 1000} Gbps` : `${n} Mbps`);
+/** Options for a link speed select, keeping an unusual current value selectable. */
+function speedOptions(current: number) {
+  const speeds = LINK_SPEEDS.includes(current) || current <= 0 ? LINK_SPEEDS : [...LINK_SPEEDS, current].sort((a, b) => a - b);
+  return speeds.map((n) => <option key={n} value={n}>{speedLabel(n)}</option>);
+}
+
 function RotateField({ value, onChange }: { value: number; onChange: (deg: number) => void }) {
   return (
     <div className="row" style={{ alignItems: "end" }}>
@@ -416,6 +424,12 @@ function DeviceInspector({ id, clear }: { id: string; clear: () => void }) {
         <div style={{ flex: 1 }}><NumberField label="Peak W" step={5} value={dev.peakW ?? profile?.peakW ?? 0} onChange={(v) => set((d) => void (d.peakW = v))} /></div>
         <div style={{ width: 70 }}><NumberField label="Ports" step={1} min={0} value={dev.ports ?? profile?.ports ?? 0} onChange={(v) => set((d) => void (d.ports = Math.max(0, Math.round(v))))} /></div>
       </div>
+      <label className="field">
+        Port speed
+        <select value={dev.portMbps} onChange={(e) => set((d) => void (d.portMbps = Number(e.target.value)))}>
+          {speedOptions(dev.portMbps)}
+        </select>
+      </label>
       <RotateField value={dev.rotation} onChange={(v) => set((d) => void (d.rotation = v))} />
       <PlugSelect value={encodePlug(dev.pluggedInto)} onChange={(v) => set((d) => void (d.pluggedInto = v))} />
       {venue.jacks.length > 0 && (
@@ -433,12 +447,16 @@ function DeviceInspector({ id, clear }: { id: string; clear: () => void }) {
         return (
           <div key={u.id} className="row">
             <span className="grow">To {nameOf(other)}</span>
+            <select aria-label={`Speed of uplink to ${nameOf(other)}`} value={u.mbps ?? ""} onChange={(e) => update((d) => { const t = d.uplinks.find((x) => x.id === u.id); if (t) t.mbps = e.target.value ? Number(e.target.value) : null; })}>
+              <option value="">Auto speed</option>
+              {speedOptions(u.mbps ?? 0)}
+            </select>
             <button className="btn small danger" onClick={() => update((d) => void (d.uplinks = d.uplinks.filter((x) => x.id !== u.id)))}>Remove</button>
           </div>
         );
       })}
       {others.length > 0 && (
-        <select aria-label="Add uplink" value="" onChange={(e) => e.target.value && update((d) => void d.uplinks.push({ id: newId("up"), fromDeviceId: id, toDeviceId: e.target.value, overrideFt: null }))}>
+        <select aria-label="Add uplink" value="" onChange={(e) => e.target.value && update((d) => void d.uplinks.push({ id: newId("up"), fromDeviceId: id, toDeviceId: e.target.value, overrideFt: null, mbps: null }))}>
           <option value="">Connect to another switch…</option>
           {others.map((d) => <option key={d.id} value={d.id}>{d.label || d.id}</option>)}
         </select>

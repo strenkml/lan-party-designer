@@ -231,6 +231,8 @@ export const InfraDevice = z.object({
   rotation: z.number().default(0),
   /** Wall jack this device uplinks to, if any. */
   jackId: Id.nullable().default(null),
+  /** Speed of each port in Mbps. */
+  portMbps: z.number().positive().default(1000),
   pluggedInto: PluggedInto.nullable().default(null),
 });
 export type InfraDevice = z.infer<typeof InfraDevice>;
@@ -240,6 +242,8 @@ export const Uplink = z.object({
   fromDeviceId: Id,
   toDeviceId: Id,
   overrideFt: z.number().positive().nullable().default(null),
+  /** Link speed in Mbps. Null means the slower of the two devices' port speeds. */
+  mbps: z.number().positive().nullable().default(null),
 });
 export type Uplink = z.infer<typeof Uplink>;
 
@@ -291,10 +295,22 @@ export const ChecklistItem = z.object({
 });
 export type ChecklistItem = z.infer<typeof ChecklistItem>;
 
+/** Cables and gear already on hand, so they come off the shopping list. Cable maps are keyed by length in feet. */
+export const OwnedGear = z.object({
+  ethernet: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  cords: z.record(z.string(), z.number().int().nonnegative()).default({}),
+  strips: z.number().int().nonnegative().default(0),
+  switches: z.number().int().nonnegative().default(0),
+});
+export type OwnedGear = z.infer<typeof OwnedGear>;
+
 export const EventSettings = z.object({
   rsvpMode: z.enum(["confirmed", "confirmedInvited"]).default("confirmedInvited"),
   /** Profile used to fill empty seats for worst-case planning. */
   placeholderProfileId: Id.nullable().default(null),
+  owned: OwnedGear.default(OwnedGear.parse({})),
+  /** Speed of the internet connection in Mbps, if known. */
+  internetMbps: z.number().positive().nullable().default(null),
 });
 export type EventSettings = z.infer<typeof EventSettings>;
 

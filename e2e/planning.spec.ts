@@ -853,3 +853,33 @@ test.describe("wire to menu", () => {
   });
 });
 
+
+test("reports show heat, a cable across a walkway, internet share and owned gear", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await request.put(`/api/events/${event.id}`, { data: { doc: {
+    zones: [{ id: "z1", label: "Aisle", kind: "walkway", x: 12, y: 8, width: 2, depth: 16 }],
+    devices: [{ id: "sw1", label: "Core switch", profileId: "switch-8", x: 4, y: 10, rotation: 0 }],
+    seats: [{ id: "s1", label: "A1", x: 18, y: 10, netDeviceId: "sw1", netPort: 0 }],
+  } } });
+
+  await page.goto(`/#/event/${event.id}/reports`);
+  await expect(page.getByText(/Heat in the room:/)).toBeVisible();
+  await expect(page.getByText(/Ethernet cable from A1 to Core switch crosses Aisle/)).toBeVisible();
+
+  await page.getByLabel("Internet speed (Mbps)").fill("10");
+  await expect(page.getByText(/1 wired seats share the connection: about 10 Mbps each/)).toBeVisible();
+
+  const row = page.getByRole("row", { name: /Ethernet cable, 25 ft/ });
+  await expect(row.getByRole("cell").last()).toHaveText("1");
+  await page.getByLabel("Owned: Ethernet cable, 25 ft").fill("1");
+  await expect(row.getByRole("cell").last()).toHaveText("0");
+});
+
+test("the plan can be exported as a PNG", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await page.goto(`/#/event/${event.id}/plan`);
+  await page.waitForTimeout(900);
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export plan as PNG" }).click();
+  expect((await download).suggestedFilename()).toBe("Fall-LAN.png");
+});

@@ -1,5 +1,5 @@
 import type Konva from "konva";
-import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent, type MutableRefObject } from "react";
 import { Circle, Group, Image as KImage, Layer, Line, Rect, Shape, Stage, Text } from "react-konva";
 import { cableConnections, type EventDoc, type Level, type Point, type VenueDoc } from "@lpd/shared";
 import { uploadUrl } from "../lib/api";
@@ -74,7 +74,12 @@ export interface FloorPlanProps {
   onRoomVertexRemove: (index: number) => void;
   onRoomFinish: () => void;
   onDropPerson: (personId: string, pt: Point) => void;
+  /** Filled with a function that renders the whole plan, whatever the current pan and zoom, to a canvas. */
+  exportRef?: MutableRefObject<(() => HTMLCanvasElement | null) | null>;
 }
+
+const EXPORT_PX_PER_FT = PPF * 2;
+const EXPORT_MAX_PX = 4096;
 
 const snapTo = (n: number, on: boolean) => (on ? Math.round(n * 2) / 2 : n);
 const COLOR_NAMES = [
@@ -151,6 +156,44 @@ export function FloorPlan(props: FloorPlanProps) {
     const scale = Math.min(size.w / ((maxX - minX) * PPF), size.h / ((maxY - minY) * PPF), 3);
     setView({ scale, x: -minX * PPF * scale + (size.w - (maxX - minX) * PPF * scale) / 2, y: -minY * PPF * scale + (size.h - (maxY - minY) * PPF * scale) / 2 });
   }, [venue.room, venue.outlets, venue.background, bgImage, event?.tables, event?.seats, size.w, size.h]);
+
+  useEffect(() => {
+    const ref = props.exportRef;
+    if (!ref) return;
+    ref.current = () => {
+      const stage = stageRef.current;
+      if (!stage) return null;
+      const pts: Point[] = [
+        ...venue.room,
+        ...venue.outlets,
+        ...(event?.tables ?? []),
+        ...(event?.seats ?? []),
+        ...(event?.strips ?? []),
+        ...(event?.devices ?? []),
+        ...(event?.zones ?? []),
+      ];
+      if (pts.length === 0) return null;
+      const margin = 2;
+      const minX = Math.min(...pts.map((p) => p.x)) - margin, maxX = Math.max(...pts.map((p) => p.x)) + margin;
+      const minY = Math.min(...pts.map((p) => p.y)) - margin, maxY = Math.max(...pts.map((p) => p.y)) + margin;
+      const k = view.scale;
+      const width = (maxX - minX) * PPF * k;
+      const height = (maxY - minY) * PPF * k;
+      const wanted = EXPORT_PX_PER_FT / PPF;
+      const pixelRatio = Math.min(wanted / k, EXPORT_MAX_PX / Math.max(width, height));
+      const shot = stage.toCanvas({ x: view.x + minX * PPF * k, y: view.y + minY * PPF * k, width, height, pixelRatio });
+      // the stage is transparent outside the drawn shapes, so paint the page colour underneath
+      const out = document.createElement("canvas");
+      out.width = shot.width;
+      out.height = shot.height;
+      const ctx = out.getContext("2d")!;
+      ctx.fillStyle = getComputedStyle(document.body).backgroundColor || "#fff";
+      ctx.fillRect(0, 0, out.width, out.height);
+      ctx.drawImage(shot, 0, 0);
+      return out;
+    };
+    return () => { ref.current = null; };
+  });
 
   useEffect(() => {
     if (!fitted.current && size.w > 0 && size.h > 0) {

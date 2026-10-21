@@ -1,3 +1,4 @@
+import { cableConnections } from "./connections";
 import type { EventDoc, Point, VenueDoc } from "./schema";
 
 export interface RectShape {
@@ -65,15 +66,41 @@ export function tablePolygon(t: EventDoc["tables"][number]): Point[] {
   return rectCorners(t);
 }
 
+function pointInPolygon(p: Point, poly: Point[]): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const a = poly[i]!;
+    const b = poly[j]!;
+    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+const cross = (o: Point, a: Point, b: Point) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+
+function segmentsCross(a: Point, b: Point, c: Point, d: Point): boolean {
+  const d1 = cross(c, d, a);
+  const d2 = cross(c, d, b);
+  const d3 = cross(a, b, c);
+  const d4 = cross(a, b, d);
+  return d1 * d2 < 0 && d3 * d4 < 0;
+}
+
+/** Whether a straight segment passes through, or ends inside, a polygon. Touching an edge does not count. */
+export function segmentCrossesPolygon(a: Point, b: Point, poly: Point[]): boolean {
+  if (pointInPolygon(a, poly) || pointInPolygon(b, poly)) return true;
+  return poly.some((p, i) => segmentsCross(a, b, p, poly[(i + 1) % poly.length]!));
+}
+
 export interface LayoutWarning {
   level: "warn";
-  code: "walkway";
+  code: "walkway" | "cable-walkway";
   message: string;
   refId: string;
 }
 
 /** Furniture and equipment standing in a walkway zone. */
-export function layoutWarnings(_venue: VenueDoc, event: EventDoc): LayoutWarning[] {
+export function layoutWarnings(venue: VenueDoc, event: EventDoc): LayoutWarning[] {
   const out: LayoutWarning[] = [];
   const walkways = event.zones.filter((z) => z.kind === "walkway");
   if (walkways.length === 0) return out;
@@ -99,5 +126,18 @@ export function layoutWarnings(_venue: VenueDoc, event: EventDoc): LayoutWarning
   for (const s of event.seats.filter((x) => !x.tableId)) check(s.id, s.label || s.id, [seatPoly(s)]);
   for (const st of event.strips) check(st.id, st.label || st.id, [rectCorners({ ...st, ...STRIP_SIZE })]);
   for (const d of event.devices) check(d.id, d.label || d.id, [rectCorners({ ...d, ...DEVICE_SIZE })]);
+
+  // Cables are drawn as straight legs through their bend points.
+  for (const cn of cableConnections(venue, event)) {
+    const path = [cn.from, ...cn.waypoints, cn.to];
+    const zone = walkways.find((z) => {
+      const poly = rectCorners(z);
+      return path.slice(1).some((p, i) => segmentCrossesPolygon(path[i]!, p, poly));
+    });
+    if (zone) {
+      const kind = cn.kind === "ethernet" ? "Ethernet cable" : "Power cable";
+      out.push({ level: "warn", code: "cable-walkway", message: `${kind} from ${cn.fromName} to ${cn.toName} crosses ${zoneName(zone)}`, refId: cn.key });
+    }
+  }
   return out;
 }

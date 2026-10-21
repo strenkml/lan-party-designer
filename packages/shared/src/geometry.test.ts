@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { layoutWarnings } from "./geometry";
-import { polygonsOverlap, rectCorners } from "./geometry";
+import { polygonsOverlap, rectCorners, segmentCrossesPolygon } from "./geometry";
 import { EventDoc, VenueDoc } from "./schema";
 
 describe("rectCorners", () => {
@@ -81,5 +81,46 @@ describe("layoutWarnings", () => {
       tables: [{ id: "t1", label: "Table 1", x: 10, y: 5, width: 6, depth: 2.5, seats: 2 }],
     });
     expect(layoutWarnings(venue, event)).toEqual([]);
+  });
+});
+
+describe("cable walkway warnings", () => {
+  const venue = VenueDoc.parse({});
+  const walkway = { id: "w1", label: "Aisle", kind: "walkway", x: 10, y: 5, width: 2, depth: 10, rotation: 0 };
+  const sw = { id: "sw", label: "Switch", profileId: "switch-8", x: 2, y: 2, rotation: 0 };
+  const seat = (x: number, y: number) => ({ id: "s1", label: "A1", x, y, rotation: 0, netDeviceId: "sw", netPort: 0 });
+
+  it("flags a cable that runs across a walkway", () => {
+    const event = EventDoc.parse({ zones: [walkway], devices: [sw], seats: [seat(18, 2)] });
+    const warnings = layoutWarnings(venue, event).filter((w) => w.code === "cable-walkway");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({ level: "warn", refId: "eth:s1" });
+    expect(warnings[0]!.message).toContain("Aisle");
+  });
+
+  it("ignores cables on the same side of the walkway", () => {
+    const event = EventDoc.parse({ zones: [walkway], devices: [sw], seats: [seat(6, 4)] });
+    expect(layoutWarnings(venue, event).filter((w) => w.code === "cable-walkway")).toEqual([]);
+  });
+
+  it("follows bend points, so routing around the walkway clears the warning", () => {
+    const base = { zones: [walkway], devices: [sw], seats: [seat(18, 2)] };
+    const around = EventDoc.parse({ ...base, routes: { "eth:s1": [{ x: 10, y: -2 }, { x: 12, y: -2 }] } });
+    // the walkway spans y 0 to 10, so a route that stays at y -2 or less passes above it
+    expect(layoutWarnings(venue, around).filter((w) => w.code === "cable-walkway")).toEqual([]);
+  });
+
+  it("only counts walkway zones", () => {
+    const event = EventDoc.parse({ zones: [{ ...walkway, kind: "food" }], devices: [sw], seats: [seat(18, 2)] });
+    expect(layoutWarnings(venue, event)).toEqual([]);
+  });
+});
+
+describe("segmentCrossesPolygon", () => {
+  const box = rectCorners({ x: 0, y: 0, width: 4, depth: 4, rotation: 0 });
+  it("sees a segment through, ending inside, or missing a shape", () => {
+    expect(segmentCrossesPolygon({ x: -5, y: 0 }, { x: 5, y: 0 }, box)).toBe(true);
+    expect(segmentCrossesPolygon({ x: 0, y: 0 }, { x: 5, y: 5 }, box)).toBe(true);
+    expect(segmentCrossesPolygon({ x: -5, y: 3 }, { x: 5, y: 3 }, box)).toBe(false);
   });
 });

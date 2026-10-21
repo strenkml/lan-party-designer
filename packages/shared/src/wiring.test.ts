@@ -69,7 +69,7 @@ describe("what a seat can be wired to", () => {
   it("shows a full switch as unavailable, counting seats and uplinks against its ports", () => {
     const doc = base();
     // sw1 has 4 ports: one uplink, three seats
-    doc.uplinks.push({ id: "u1", fromDeviceId: "sw1", toDeviceId: "sw2", overrideFt: null });
+    doc.uplinks.push({ id: "u1", fromDeviceId: "sw1", toDeviceId: "sw2", overrideFt: null, mbps: null });
     doc.seats.push(
       { ...doc.seats[0]!, id: "x1", netDeviceId: "sw1", netPort: 0 },
       { ...doc.seats[0]!, id: "x2", netDeviceId: "sw1", netPort: 1 },
@@ -105,7 +105,7 @@ describe("what a switch can be wired to", () => {
 
   it("stops offering an uplink that already exists", () => {
     const doc = base();
-    doc.uplinks.push({ id: "u1", fromDeviceId: "sw2", toDeviceId: "sw1", overrideFt: null });
+    doc.uplinks.push({ id: "u1", fromDeviceId: "sw2", toDeviceId: "sw1", overrideFt: null, mbps: null });
     expect(ids(opts(doc, ep("device", "sw1")))).not.toContain("device:sw2");
   });
 

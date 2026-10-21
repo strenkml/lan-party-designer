@@ -13,7 +13,7 @@ pnpm typecheck    # all packages
 pnpm test         # unit tests in all packages (Vitest)
 pnpm e2e          # builds the web app, then runs Playwright against a throwaway server on :3100
 pnpm build        # web build plus server typecheck
-docker compose up -d --build
+docker compose up -d --build   # build from source; without --build compose uses the published image
 ```
 
 `pnpm e2e` serves `apps/web/dist`. Running `playwright test` directly uses whatever was built last, so a stale build gives confusing failures. Always use `pnpm e2e` (or build first).

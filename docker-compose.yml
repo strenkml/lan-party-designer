@@ -1,7 +1,7 @@
 services:
   lan-party-designer:
     build: .
-    image: lan-party-designer
+    image: ghcr.io/strenkml/lan-party-designer:latest
     ports:
       - "3000:3000"
     volumes:
