@@ -260,4 +260,29 @@ test.describe("venue editor placement", () => {
       return [d.obstacles.length, d.outlets.length];
     }).toEqual([1, 1]);
   });
+
+  test("an outlet can have more than two plugs", async ({ page, request }) => {
+    const { venue, canvas, at } = await openVenue(page, request);
+    await page.getByRole("button", { name: "Outlet", exact: true }).click();
+    await canvas.click({ position: at(0.5, 0.5) });
+    await expect(page.getByLabel("Plugs")).toHaveValue("2");
+    await page.getByLabel("Plugs").fill("4");
+    await expect.poll(async () => (await doc(request, venue.id)).outlets[0]?.sockets).toBe(4);
+  });
+});
+
+test("plugging more strips into an outlet than it has plugs raises a problem", async ({ page, request }) => {
+  const { venue, event } = await seed(request);
+  await request.put(`/api/venues/${venue.id}`, { data: { doc: {
+    circuits: [{ id: "cb1", label: "Kitchen breaker", amps: 15 }],
+    outlets: [{ id: "o1", label: "North wall", x: 1, y: 1, circuitId: "cb1", amps: 15, sockets: 1 }],
+  } } });
+  await request.put(`/api/events/${event.id}`, { data: { doc: {
+    strips: [
+      { id: "st1", label: "Strip 1", x: 3, y: 3, pluggedInto: { kind: "outlet", id: "o1" } },
+      { id: "st2", label: "Strip 2", x: 5, y: 3, pluggedInto: { kind: "outlet", id: "o1" } },
+    ],
+  } } });
+  await page.goto(`/#/event/${event.id}/reports`);
+  await expect(page.getByText("North wall (outlet) needs 2 sockets but has 1")).toBeVisible();
 });

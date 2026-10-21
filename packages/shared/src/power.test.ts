@@ -69,7 +69,7 @@ describe("computePowerLoad", () => {
 
   it("reports load behind an unknown breaker as unverified instead of attributing it to a circuit", () => {
     const report = computePowerLoad({
-      venue: venue({ outlets: [{ id: "o1", x: 0, y: 0, circuitId: null, amps: 15, label: "" }] }),
+      venue: venue({ outlets: [{ id: "o1", x: 0, y: 0, circuitId: null, amps: 15, label: "", sockets: 2 }] }),
       event: event(),
       people: [person("ann")],
       profiles,
@@ -175,5 +175,68 @@ describe("computePowerLoad", () => {
       profiles,
     });
     expect(report.warnings.map((w) => w.code)).toContain("unpowered-seat");
+  });
+
+  describe("outlet sockets", () => {
+    const strip = (id: string, into: object) => ({ id, x: 0, y: 0, sockets: 6, amps: 15, pluggedInto: into });
+    const plug = { kind: "outlet", id: "o1" };
+
+    it("defaults to a duplex outlet with two sockets", () => {
+      const report = computePowerLoad({ venue: venue(), event: event(), people: [person("ann")], profiles });
+      expect(report.outlets[0]).toMatchObject({ socketsUsed: 1, socketsTotal: 2 });
+    });
+
+    it("allows as many things as the outlet has sockets and flags one more", () => {
+      const three = [strip("st1", plug), strip("st2", plug), strip("st3", plug)];
+      const full = computePowerLoad({
+        venue: venue({ outlets: [{ id: "o1", x: 0, y: 0, circuitId: "c1", amps: 15, label: "", sockets: 3 }] }),
+        event: event({ strips: three, seats: [], attendance: [] } as never),
+        people: [],
+        profiles,
+      });
+      expect(full.outlets[0]).toMatchObject({ socketsUsed: 3, socketsTotal: 3 });
+      expect(full.warnings.map((w) => w.code)).not.toContain("sockets");
+
+      const over = computePowerLoad({
+        venue: venue(),
+        event: event({ strips: three, seats: [], attendance: [] } as never),
+        people: [],
+        profiles,
+      });
+      expect(over.outlets[0]).toMatchObject({ socketsUsed: 3, socketsTotal: 2 });
+      expect(over.warnings).toContainEqual(expect.objectContaining({ code: "sockets", level: "danger", refId: "o1" }));
+    });
+
+    it("counts an extension cord as one socket on its outlet", () => {
+      const report = computePowerLoad({
+        venue: venue(),
+        event: event({
+          cords: [{ id: "cd1", gauge: 14, amps: 15, outletId: "o1" }],
+          strips: [strip("st1", { kind: "cord", id: "cd1" })],
+          seats: [],
+          attendance: [],
+        } as never),
+        people: [],
+        profiles,
+      });
+      expect(report.outlets[0]).toMatchObject({ socketsUsed: 1, socketsTotal: 2 });
+    });
+
+    it("sums the load of everything sharing the outlet", () => {
+      const report = computePowerLoad({
+        venue: venue({ outlets: [{ id: "o1", x: 0, y: 0, circuitId: "c1", amps: 15, label: "", sockets: 4 }] }),
+        event: event({
+          strips: [strip("st1", plug), strip("st2", plug)],
+          seats: [{ id: "s1", x: 0, y: 0, stripId: "st1" }, { id: "s2", x: 0, y: 0, stripId: "st2" }],
+          attendance: [
+            { personId: "ann", rsvp: "confirmed", seatId: "s1" },
+            { personId: "bob", rsvp: "confirmed", seatId: "s2" },
+          ],
+        } as never),
+        people: [person("ann"), person("bob")],
+        profiles,
+      });
+      expect(report.outlets[0]).toMatchObject({ socketsUsed: 2, socketsTotal: 4, typicalW: 720 });
+    });
   });
 });

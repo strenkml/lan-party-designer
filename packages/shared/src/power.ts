@@ -38,6 +38,11 @@ export interface StripReport extends NodeReport {
   socketsTotal: number;
 }
 
+export interface OutletReport extends NodeReport {
+  socketsUsed: number;
+  socketsTotal: number;
+}
+
 export interface CircuitReport extends NodeReport {
   outletIds: string[];
 }
@@ -62,7 +67,7 @@ export interface PowerWarning {
 export interface PowerReport {
   strips: StripReport[];
   cords: NodeReport[];
-  outlets: NodeReport[];
+  outlets: OutletReport[];
   circuits: CircuitReport[];
   /** Load on outlets whose breaker is not known. */
   unverified: Watts;
@@ -206,7 +211,7 @@ export function computePowerLoad({ venue, event, people, profiles }: PowerInputs
     if (cord.outletId) {
       addChild(key("outlet", cord.outletId), {
         ...ZERO,
-        sockets: 0,
+        sockets: 1,
         node: key("cord", cord.id),
       });
     }
@@ -248,9 +253,11 @@ export function computePowerLoad({ venue, event, people, profiles }: PowerInputs
     nodeReport(cord.id, cord.label || cord.id, cord.amps, total(key("cord", cord.id))),
   );
 
-  const outlets = venue.outlets.map((outlet) =>
-    nodeReport(outlet.id, outlet.label || outlet.id, outlet.amps, total(key("outlet", outlet.id))),
-  );
+  const outlets: OutletReport[] = venue.outlets.map((outlet) => ({
+    ...nodeReport(outlet.id, outlet.label || outlet.id, outlet.amps, total(key("outlet", outlet.id))),
+    socketsUsed: socketsUsed(key("outlet", outlet.id)),
+    socketsTotal: outlet.sockets,
+  }));
 
   const circuits: CircuitReport[] = venue.circuits.map((circuit) => {
     const members = venue.outlets.filter((o) => o.circuitId === circuit.id);
@@ -300,16 +307,20 @@ export function computePowerLoad({ venue, event, people, profiles }: PowerInputs
   outlets.forEach((r) => limitWarning("outlet", r));
   circuits.forEach((r) => limitWarning("breaker", r));
 
-  for (const s of strips) {
-    if (s.socketsUsed > s.socketsTotal) {
-      warnings.push({
-        level: "danger",
-        code: "sockets",
-        message: `${s.label} (power strip) needs ${s.socketsUsed} sockets but has ${s.socketsTotal}`,
-        refId: s.id,
-      });
+  const socketCheck = (kind: string, items: { id: string; label: string; socketsUsed: number; socketsTotal: number }[]) => {
+    for (const s of items) {
+      if (s.socketsUsed > s.socketsTotal) {
+        warnings.push({
+          level: "danger",
+          code: "sockets",
+          message: `${s.label} (${kind}) needs ${s.socketsUsed} sockets but has ${s.socketsTotal}`,
+          refId: s.id,
+        });
+      }
     }
-  }
+  };
+  socketCheck("power strip", strips);
+  socketCheck("outlet", outlets);
   for (const strip of event.strips) {
     const target: PluggedInto | null = strip.pluggedInto;
     if (!target) {

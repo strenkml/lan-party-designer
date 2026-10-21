@@ -66,6 +66,8 @@ export const Outlet = z.object({
   /** Null means the breaker is not known yet. */
   circuitId: Id.nullable().default(null),
   amps: z.number().positive().default(15),
+  /** Plugs on this outlet. A standard duplex has 2. */
+  sockets: z.number().int().positive().default(2),
 });
 export type Outlet = z.infer<typeof Outlet>;
 

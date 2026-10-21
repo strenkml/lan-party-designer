@@ -99,7 +99,7 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
     update((d) => {
       if (tool === "door") d.doors.push({ id: newIdValue, x: spot.x, y: spot.y, width: 3, rotation: wall?.rotation ?? 0 });
       if (tool === "obstacle") d.obstacles.push({ id: newIdValue, label: "Obstacle", x: pt.x, y: pt.y, width: 3, depth: 3, rotation: 0 });
-      if (tool === "outlet") d.outlets.push({ id: newIdValue, label: "", x: spot.x, y: spot.y, circuitId: paintCircuit, amps: 15 });
+      if (tool === "outlet") d.outlets.push({ id: newIdValue, label: "", x: spot.x, y: spot.y, circuitId: paintCircuit, amps: 15, sockets: 2 });
     });
     if (tool === "door" || tool === "obstacle" || tool === "outlet") setSelection({ kind: tool, id: newIdValue });
   };
@@ -242,6 +242,8 @@ function Inspector({ selection }: { selection: Selection | null }) {
             {doc.circuits.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
         </label>
+        <NumberField label="Plugs" step={1} min={1} value={o.sockets} onChange={(v) => set((t) => void (t.sockets = Math.max(1, Math.round(v))))} />
+        <p className="muted" style={{ margin: 0 }}>A standard wall outlet has 2 plugs. Count every socket you can use.</p>
         <NumberField label="Outlet rating" suffix="A" step={5} value={o.amps} onChange={(v) => set((t) => void (t.amps = v))} />
       </section>
     );

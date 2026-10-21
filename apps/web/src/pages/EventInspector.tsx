@@ -233,7 +233,7 @@ function OutletInspector({ id }: { id: string }) {
     <section>
       <h3>{outletName(venue, id)}</h3>
       <p className="muted">{circuit ? `On ${circuit.label} (${circuit.amps}A)` : "Breaker unknown. Load here is unverified."}</p>
-      <Gauge label="Outlet load" level={r.level} typicalA={r.typicalA} peakA={r.peakA} ratingA={r.ratingA} />
+      <Gauge label="Outlet load" level={r.level} typicalA={r.typicalA} peakA={r.peakA} ratingA={r.ratingA} detail={`${r.socketsUsed} of ${r.socketsTotal} plugs used`} />
       <button className="btn" onClick={() => update((d) => void d.cords.push({ id: newId("cord"), label: `Cord ${doc.cords.length + 1}`, gauge: 14, amps: 15, outletId: id, overrideFt: null }))}>
         Add extension cord from here
       </button>

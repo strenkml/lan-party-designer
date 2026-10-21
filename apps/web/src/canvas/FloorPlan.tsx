@@ -416,6 +416,9 @@ export function FloorPlan(props: FloorPlanProps) {
                 <Circle radius={0.5 * PPF} fill={col ?? c.panel} stroke={selected("outlet", o.id) ? c.focus : lvl ?? (col ? c.ink : c["ink-2"])} strokeWidth={selected("outlet", o.id) ? 3 : lvl ? 3 : 1.5} dash={col ? undefined : [3, 2]} />
                 <Line points={[-3, -2, -3, 2]} stroke={col ? "#111" : c["ink-2"]} strokeWidth={1.5} listening={false} />
                 <Line points={[3, -2, 3, 2]} stroke={col ? "#111" : c["ink-2"]} strokeWidth={1.5} listening={false} />
+                {o.sockets !== 2 && (
+                  <Text text={`×${o.sockets}`} x={0.5 * PPF + 2} y={-5} fontSize={11} fontStyle="bold" fill={c.ink} listening={false} />
+                )}
               </Group>
             );
           })}
