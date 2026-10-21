@@ -60,6 +60,8 @@ export interface FloorPlanProps {
   seatLabels: Record<string, string>;
   seatTint: Record<string, "done" | "partial" | "none">;
   onSelect: (s: Selection | null) => void;
+  /** Right-click. `target` is the object under the pointer, or null for empty floor. `at` is in feet. */
+  onContextMenu?: (info: { target: Selection | null; at: Point; screen: { x: number; y: number } }) => void;
   /** Shift-click: add to or remove from the picked objects. */
   onToggleSelect?: (s: Selection) => void;
   /** While dragging: where the item should land once lined up with other objects, or null for no snapping. */
@@ -193,6 +195,7 @@ export function FloorPlan(props: FloorPlanProps) {
   const lvlColor = (l?: Level) => (l === "danger" ? c.danger : l === "warn" ? c.warn : null);
 
   const dragProps = (sel: Selection) => ({
+    name: `ctx:${sel.kind}:${sel.id}`,
     draggable: interactive,
     onClick: (e: Konva.KonvaEventObject<MouseEvent>) => {
       if (!interactive) return;
@@ -227,6 +230,25 @@ export function FloorPlan(props: FloorPlanProps) {
       props.onDragEnd(sel, pt);
     },
   });
+
+  const onStageContextMenu = (e: Konva.KonvaEventObject<PointerEvent>) => {
+    // Shift + right-click keeps the browser's own menu
+    if (!props.onContextMenu || e.evt.shiftKey) return;
+    e.evt.preventDefault();
+    const stage = stageRef.current;
+    if (!stage) return;
+    let target: Selection | null = null;
+    for (let n: Konva.Node | null = e.target; n && n !== stage; n = n.getParent()) {
+      const m = /^ctx:([a-z]+):(.+)$/.exec(n.name());
+      if (m) {
+        target = { kind: m[1] as SelKind, id: m[2]! };
+        break;
+      }
+    }
+    const p = pointer();
+    if (!p) return;
+    props.onContextMenu({ target, at: p, screen: { x: e.evt.clientX, y: e.evt.clientY } });
+  };
 
   const onStageClick = (e: Konva.KonvaEventObject<MouseEvent>) => {
     if (props.tool === "select") {
@@ -307,6 +329,7 @@ export function FloorPlan(props: FloorPlanProps) {
         onDragEnd={(e) => e.target === e.target.getStage() && setView((v) => ({ ...v, x: e.target.x(), y: e.target.y() }))}
         onWheel={onWheel}
         onClick={onStageClick}
+        onContextMenu={onStageContextMenu}
         onMouseMove={(e) => (tool === "room" ? setCursor(guidedPointer(e.evt.shiftKey)) : undefined)}
         style={{ cursor: tool === "select" ? "default" : "crosshair" }}
       >
@@ -472,14 +495,11 @@ export function FloorPlan(props: FloorPlanProps) {
           })}
 
           {/* cables, drawn under items */}
-          {event && props.showPower && event.seats.map((sd) => {
-            const st = sd.stripId ? stripById.get(sd.stripId) : undefined;
-            return st ? line([sd, st], c.power, { key: `p-${sd.id}`, dash: [5, 4], width: 1.2 }) : null;
-          })}
           {event && connections.map((cn) => {
             const sel = props.selection?.kind === "cable" && props.selection.id === cn.key;
             const color = cn.kind === "ethernet" ? c.net : c.power;
-            const base = cn.key.startsWith("pwr:cord") ? 4 : cn.kind === "power" ? 2.5 : cn.key.startsWith("eth:jack-") || cn.key.startsWith("eth:up") ? 3 : 1.75;
+            const seatLink = cn.key.startsWith("pwr:seat:");
+            const base = seatLink ? 1.2 : cn.key.startsWith("pwr:cord") ? 4 : cn.kind === "power" ? 2.5 : cn.key.startsWith("eth:jack-") || cn.key.startsWith("eth:up") ? 3 : 1.75;
             return (
               <Line
                 key={cn.key}
@@ -487,10 +507,11 @@ export function FloorPlan(props: FloorPlanProps) {
                 stroke={sel ? c.focus : color}
                 strokeWidth={sel ? base + 1.5 : base}
                 strokeScaleEnabled={false}
-                dash={cn.key.startsWith("eth:jack-") ? [8, 4] : undefined}
+                dash={cn.key.startsWith("eth:jack-") ? [8, 4] : seatLink ? [5, 4] : undefined}
                 opacity={sel ? 1 : 0.85}
                 lineJoin="round"
                 hitStrokeWidth={14}
+                name={`ctx:cable:${cn.key}`}
                 listening={interactive}
                 onClick={(e) => {
                   if (!interactive) return;
@@ -631,7 +652,7 @@ export function FloorPlan(props: FloorPlanProps) {
                   const q = pts[i + 1]!;
                   const mx = (p.x + q.x) / 2, my = (p.y + q.y) / 2;
                   return (
-                    <Group key={`mid${i}`} x={mx * PPF} y={my * PPF} onClick={(e) => { e.cancelBubble = true; emit([...cn.waypoints.slice(0, i), { x: grid(mx), y: grid(my) }, ...cn.waypoints.slice(i)]); }}>
+                    <Group key={`mid${i}`} name={`ctx:cable:${cn.key}`} x={mx * PPF} y={my * PPF} onClick={(e) => { e.cancelBubble = true; emit([...cn.waypoints.slice(0, i), { x: grid(mx), y: grid(my) }, ...cn.waypoints.slice(i)]); }}>
                       <Circle radius={7} fill={c.panel} stroke={c.focus} strokeWidth={1.5} opacity={0.9} />
                       <Line points={[-3.5, 0, 3.5, 0]} stroke={c.focus} strokeWidth={1.5} listening={false} />
                       <Line points={[0, -3.5, 0, 3.5]} stroke={c.focus} strokeWidth={1.5} listening={false} />
@@ -639,7 +660,7 @@ export function FloorPlan(props: FloorPlanProps) {
                   );
                 })}
                 {cn.waypoints.map((w, i) => (
-                  <Circle key={`wp${i}`} x={w.x * PPF} y={w.y * PPF} radius={7} fill={c.focus} stroke={c.panel} strokeWidth={2} draggable
+                  <Circle key={`wp${i}`} name={`ctx:cable:${cn.key}`} x={w.x * PPF} y={w.y * PPF} radius={7} fill={c.focus} stroke={c.panel} strokeWidth={2} draggable
                     onDragEnd={(e) => {
                       const pt = { x: grid(e.target.x() / PPF), y: grid(e.target.y() / PPF) };
                       e.target.position({ x: pt.x * PPF, y: pt.y * PPF });

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { VenueDoc, type Circuit, type Point } from "@lpd/shared";
 import { FloorPlan, CIRCUIT_COLORS, type Selection, type Tool } from "../canvas/FloorPlan";
 import { api, uploadUrl } from "../lib/api";
+import { ContextMenu, type MenuEntry } from "../lib/ContextMenu";
 import { useEditorKeys } from "../lib/keys";
 import { snapToWall } from "../lib/walls";
 import { invalidate } from "../lib/queries";
@@ -105,6 +106,11 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
       return setRoomDraft((r) => [...r, pt]);
     }
     if (tool === "calibrate") return setCalibration((c) => (c.length >= 2 ? [pt] : [...c, pt]));
+    if (tool !== "select") addItem(tool, pt);
+  };
+
+  /** Adds one item at a point. Openings and jacks snap onto the nearest wall. */
+  const addItem = (tool: Tool, pt: Point) => {
     const newIdValue = newId(tool);
     const wall = isOpening(tool) ? snapToWall(doc.room, pt, { maxDistFt: 4 }) : tool === "outlet" || tool === "jack" ? snapToWall(doc.room, pt, { maxDistFt: 2 }) : null;
     if (isOpening(tool) && !wall) {
@@ -150,6 +156,77 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
       Object.assign(item, wall?.point ?? pt);
       if ((isOpening(s.kind) || s.kind === "jack") && wall) item.rotation = wall.rotation;
     });
+
+  // ----- right-click menu -----
+  const [menu, setMenu] = useState<{ x: number; y: number; entries: MenuEntry[] } | null>(null);
+
+  const removeSelected = (sel: Selection) =>
+    update((d) => {
+      if (sel.kind === "outlet") d.outlets = d.outlets.filter((o) => o.id !== sel.id);
+      if (sel.kind === "jack") d.jacks = d.jacks.filter((o) => o.id !== sel.id);
+      if (sel.kind === "door") d.doors = d.doors.filter((o) => o.id !== sel.id);
+      if (sel.kind === "window") d.windows = d.windows.filter((o) => o.id !== sel.id);
+      if (sel.kind === "garage") d.garageDoors = d.garageDoors.filter((o) => o.id !== sel.id);
+      if (sel.kind === "obstacle") d.obstacles = d.obstacles.filter((o) => o.id !== sel.id);
+    });
+
+  const venueEntries = (sel: Selection): MenuEntry[] => {
+    const entries: MenuEntry[] = [];
+    if (sel.kind === "door") {
+      const door = doc.doors.find((x) => x.id === sel.id);
+      const flip = (f: "flipSwing" | "flipHinge") => update((d) => { const t = d.doors.find((x) => x.id === sel.id); if (t) t[f] = !t[f]; });
+      entries.push({ label: door?.flipSwing ? "Swing into the room" : "Swing out of the room", onSelect: () => flip("flipSwing") });
+      entries.push({ label: `Move hinge to the ${door?.flipHinge ? "left" : "right"}`, onSelect: () => flip("flipHinge") });
+    }
+    if (sel.kind === "garage") {
+      const g = doc.garageDoors.find((x) => x.id === sel.id);
+      const width = (w: number) => update((d) => { const t = d.garageDoors.find((x) => x.id === sel.id); if (t) t.width = w; });
+      entries.push({ label: "Make it a single door (9 ft)", disabled: g?.width === 9, onSelect: () => width(9) });
+      entries.push({ label: "Make it a double door (16 ft)", disabled: g?.width === 16, onSelect: () => width(16) });
+    }
+    if (sel.kind === "outlet") {
+      const o = doc.outlets.find((x) => x.id === sel.id);
+      const setBreaker = (id: string | null) => update((d) => { const t = d.outlets.find((x) => x.id === sel.id); if (t) t.circuitId = id; });
+      entries.push({ heading: "Breaker" });
+      for (const c of doc.circuits) entries.push({ label: `${c.label} (${c.amps}A)`, disabled: o?.circuitId === c.id, onSelect: () => setBreaker(c.id) });
+      entries.push({ label: "Unknown", disabled: !o?.circuitId, onSelect: () => setBreaker(null) });
+    }
+    if (sel.kind === "obstacle") {
+      entries.push({
+        label: "Rotate 90°",
+        onSelect: () => update((d) => { const t = d.obstacles.find((x) => x.id === sel.id); if (t) t.rotation = (Math.round(t.rotation) + 90) % 360; }),
+      });
+      entries.push({
+        label: "Duplicate",
+        onSelect: () => {
+          const o = doc.obstacles.find((x) => x.id === sel.id);
+          if (!o) return;
+          const id = newId("obstacle");
+          update((d) => void d.obstacles.push({ ...o, id, x: o.x + 2, y: o.y + 2, label: `${o.label || "Obstacle"} copy` }));
+          setSelection({ kind: "obstacle", id });
+        },
+      });
+    }
+    if (entries.length) entries.push({ separator: true });
+    entries.push({ label: "Delete", danger: true, onSelect: () => { removeSelected(sel); setSelection(null); } });
+    return entries;
+  };
+
+  const floorEntries = (pt: Point): MenuEntry[] => [
+    { heading: "Add here" },
+    { label: "Door", onSelect: () => addItem("door", pt) },
+    { label: "Window", onSelect: () => addItem("window", pt) },
+    { label: "Garage door", onSelect: () => addItem("garage", pt) },
+    { label: "Outlet", onSelect: () => addItem("outlet", pt) },
+    { label: "Network jack", onSelect: () => addItem("jack", pt) },
+    { label: "Obstacle", onSelect: () => addItem("obstacle", pt) },
+  ];
+
+  const openContextMenu = ({ target, at, screen }: { target: Selection | null; at: Point; screen: { x: number; y: number } }) => {
+    const pt = snap ? { x: Math.round(at.x * 2) / 2, y: Math.round(at.y * 2) / 2 } : at;
+    if (target) setSelection(target);
+    setMenu({ x: screen.x, y: screen.y, entries: target ? venueEntries(target) : floorEntries(pt) });
+  };
 
   const calibrationDistance = calibration.length === 2 ? Math.hypot(calibration[0]!.x - calibration[1]!.x, calibration[0]!.y - calibration[1]!.y) : 0;
 
@@ -198,6 +275,7 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
           seatLabels={{}}
           seatTint={{}}
           onSelect={onSelect}
+          onContextMenu={openContextMenu}
           onCanvasClick={place}
           onDragEnd={onDragEnd}
           onRoomVertexMove={(i, pt) => update((d) => void (d.room[i] = pt))}
@@ -230,6 +308,8 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
           />
         </aside>
       </div>
+
+      {menu && <ContextMenu x={menu.x} y={menu.y} entries={menu.entries} onClose={() => setMenu(null)} />}
 
       {calibration.length === 2 && (
         <CalibrateDialog

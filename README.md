@@ -5,8 +5,10 @@ A self-hosted planner for LAN parties of 4 to 20 people. Lay out the room and ta
 ## What it does
 
 - **Venues** hold the reusable room: outline, doors, windows, garage doors, obstacles, outlets (with plug count and height off the floor), network jacks and which breaker each outlet is on. Doors, windows, outlets and jacks snap onto walls, and wall and opening dimensions can be shown. Upload a photo or sketch of the floor plan and calibrate its scale by marking two points a known distance apart.
-- **Events** place zones (walkways, food, storage, stage), tables (6 ft, 8 ft, round, custom) with seats generated along the sides, plus power strips, extension cords, switches and routers. Start a new event from a previous event's layout. Items snap to each other and the walls while you drag (hold Alt to skip), shift-click selects several objects, and a group moves as one. Tables and power strips can be saved as named presets, and custom switches are saved as device profiles.
-- **Cables** can be routed by hand: click any ethernet or power cable, then drag its bend points around furniture. Lengths follow the route, use each outlet's height for the drop at the wall, and feed the shopping list.
+- **Events** place zones (walkways, food, storage, stage), tables (6 ft, 8 ft, round, custom) with seats generated along the sides, plus power strips, extension cords, switches and routers. Start a new event from a previous event's layout. Items snap to each other and the walls while you drag (hold Alt to skip), shift-click selects several objects, and a group moves as one. Strips and switches rotate. Tables and power strips can be saved as named presets, and custom switches are saved as device profiles.
+- **Cables** can be routed by hand: click any ethernet or power cable, then drag its bend points around furniture. Lengths follow the route, use each outlet's height for the drop at the wall, and feed the shopping list. Select a cable and press Delete (or use the panel or right-click menu) to remove it.
+- **Disconnect everything** on a switch, power strip or outlet unplugs all of its connections in one step, and Ctrl+Z brings them back.
+- **Right-click menus** in both editors: add items where you clicked, copy, paste, duplicate, rotate, group, disconnect, delete, seat a guest, flip a door, set an outlet's breaker. **Wire to…** on a seat, switch, strip, outlet or wall jack lists only connections that make sense, nearest first: seats go to switches and strips, never to other seats; a TV with no network ports gets no ethernet options; a strip cannot plug into itself or loop back through a chain. Targets that are full (no free port, plug or socket) are shown greyed out with the reason. Shift + right-click opens the browser's own menu.
 - **Power** is circuit aware: outlet, optional extension cord, power strip, devices. Each strip, cord, outlet and breaker is checked at 80% of its rating (typical draw) and 100% (peak draw). Daisy-chained strips, socket overflow and loads on outlets with an unknown breaker are flagged.
 - **Network** maps every seat to a switch port, with uplinks between switches, and estimates cable lengths (Manhattan distance, 20% slack, 3 ft drop at each end, rounded up to standard lengths).
 - **Roster** is a global people directory with their usual gear. Each event tracks RSVP, seat and per-event device changes. Drag guests onto seats on the plan or pick a seat from a list.
@@ -20,6 +22,14 @@ Units are feet and inches, power is 120 V with 15 A and 20 A breakers.
 
 ## Run with Docker
 
+Use the published image (multi-architecture: amd64 and arm64, so it also runs on a Raspberry Pi or NAS):
+
+```sh
+docker run -d --name lan-party-designer -p 3000:3000 -v lan-party-data:/data ghcr.io/strenkml/lan-party-designer:latest
+```
+
+Or build it yourself with Compose:
+
 ```sh
 docker compose up -d --build
 ```
@@ -28,7 +38,7 @@ Open http://localhost:3000. Data lives in the `lan-party-data` volume, mounted a
 
 **Upgrading:** pull the new image and restart. Database migrations run automatically at startup, and if an upgrade will change an existing database the app first saves a copy next to it (`lan-party.db.bak-<date>`). Saved events and venues from older versions load with sensible defaults for anything added since, and exports from older versions can still be imported. To go back to an older release, restore one of those backup files.
 
-Build a multi-architecture image (for a Raspberry Pi or NAS):
+Build a multi-architecture image yourself:
 
 ```sh
 docker buildx build --platform linux/amd64,linux/arm64 -t lan-party-designer .
@@ -44,9 +54,23 @@ Tool versions are pinned in `mise.toml`.
 mise install        # node and pnpm
 pnpm install
 pnpm dev            # API on :3000, web on :5173 (proxies /api)
-pnpm test           # unit tests: shared logic, API, editor state
-pnpm e2e            # Playwright (needs a Chromium: pnpm exec playwright install chromium)
+pnpm typecheck      # all packages
+pnpm build          # web build and server typecheck
+pnpm test           # unit tests: shared logic, API, database upgrades, editor state
+pnpm e2e            # builds the web app, then Playwright end to end tests
 ```
+
+Playwright needs Chromium and its system libraries once: `pnpm exec playwright install --with-deps chromium`. `pnpm e2e` always rebuilds the web app first, because the tests run against the built files.
+
+## Continuous integration
+
+`.github/workflows/ci.yml` runs on pull requests, on pushes to `master` and on tags starting with `v`:
+
+1. **Typecheck, build and unit tests.**
+2. **End to end tests** with Playwright (traces are kept as an artifact when a test fails).
+3. **Docker image:** built after both pass. Pull requests only check that it builds (amd64). Pushes to `master` publish `ghcr.io/<owner>/<repo>:latest` plus a `sha-` tag, and a tag like `v1.2.0` publishes `1.2.0` and `1.2`, all for amd64 and arm64.
+
+The first publish creates the package as private. To let others pull it, open the package page on GitHub, go to Package settings and change the visibility to public.
 
 Layout:
 

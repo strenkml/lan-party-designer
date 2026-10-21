@@ -32,6 +32,7 @@ describe("cableConnections", () => {
       "eth:u1",
       "pwr:cord:c1",
       "pwr:dev:sw",
+      "pwr:seat:s1",
       "pwr:strip:st",
     ]);
   });
@@ -46,6 +47,10 @@ describe("cableConnections", () => {
     expect(byKey("eth:jack-sw")).toMatchObject({ from: { x: 5, y: 5 }, to: { x: 0, y: 9 } });
     // a cord runs from its outlet to whatever it feeds
     expect(byKey("pwr:cord:c1")).toMatchObject({ from: { x: 0, y: 0 }, to: { x: 8, y: 3 } });
+  });
+
+  it("includes the power link from a seat to its strip", () => {
+    expect(byKey("pwr:seat:s1")).toMatchObject({ kind: "power", fromName: "A1", toName: "Strip 1", from: { x: 10, y: 4 }, to: { x: 3, y: 3 } });
   });
 
   it("carries the drawn route, empty when there is none", () => {

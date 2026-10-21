@@ -1,12 +1,15 @@
 import { useMemo, useState } from "react";
-import { BUILTIN_STRIP_PRESETS, autoWire, layoutWarnings, type GroupMember, type Level, type Point, type ZoneKind } from "@lpd/shared";
+import { BUILTIN_STRIP_PRESETS, applyWire, autoWire, cableConnections, wireOptions, layoutWarnings, type GroupMember, type Level, type Point, type ZoneKind } from "@lpd/shared";
 import { FloorPlan, type Selection, type Tool } from "../canvas/FloorPlan";
 import { useEditorKeys } from "../lib/keys";
-import { usePresets } from "../lib/queries";
+import { ContextMenu, type MenuEntry } from "../lib/ContextMenu";
+import { api } from "../lib/api";
+import { invalidate, usePresets } from "../lib/queries";
+import { nearestSegment } from "../lib/segments";
 import { boxAround, snapBox, type Box } from "../lib/snapping";
-import { Gauge, newId, toast } from "../lib/ui";
+import { Gauge, NameDialog, newId, toast } from "../lib/ui";
 import { Icons } from "../panels/Icons";
-import { TABLE_PRESETS, addTable, assignSeat, groupObjects, groupOf, moveTable, removeCord, removeDevice, removeStrip, removeTable, removeZone, seatName, shortName, translateObjects } from "../store/eventOps";
+import { TABLE_PRESETS, addTable, assignSeat, disconnectDevice, disconnectOutlet, disconnectStrip, groupObjects, groupOf, moveTable, pasteObject, deleteCable, removeCord, removeDevice, removeStrip, removeTable, removeZone, resetSeat, rotateObject, seatName, shortName, snapshotObject, translateObjects, ungroup, type ObjectSnapshot } from "../store/eventOps";
 import { useEventDoc } from "../store/eventStore";
 import { useEventCtx } from "./eventContext";
 import { CordsPanel, EventInspector, GroupInspector, MultiInspector } from "./EventInspector";
@@ -88,8 +91,7 @@ export function PlanTab() {
   const allWarnings = useMemo(() => [...report.warnings, ...layout], [report.warnings, layout]);
   const clear = () => setSelection(null);
 
-  const remove = () => {
-    const targets = picked.length >= 2 ? picked : selection ? [selection] : [];
+  const removeTargets = (targets: Selection[]) => {
     if (targets.length === 0) return;
     update((d) => {
       for (const t of targets) {
@@ -97,12 +99,13 @@ export function PlanTab() {
         if (t.kind === "strip") removeStrip(d, t.id);
         if (t.kind === "device") removeDevice(d, t.id);
         if (t.kind === "cord") removeCord(d, t.id);
-        if (t.kind === "cable") delete d.routes[t.id];
+        if (t.kind === "cable") deleteCable(d, t.id);
         if (t.kind === "zone") removeZone(d, t.id);
       }
     });
     clear();
   };
+  const remove = () => removeTargets(picked.length >= 2 ? picked : selection ? [selection] : []);
 
   useEditorKeys({
     undo: () => useEventDoc.getState().undo(),
@@ -146,27 +149,33 @@ export function PlanTab() {
     return { pt: { x: pt.x + r.dx, y: pt.y + r.dy }, guides: r.guides };
   };
 
-  const place = (pt: Point) => {
-    const id = newId(tool === "device" ? "dev" : tool);
-    if (tool === "table") {
+  /** Adds one item of a kind at a point, using the presets currently chosen in the side panel. */
+  const placeItem = (kind: "table" | "strip" | "device" | "zone", pt: Point) => {
+    const id = newId(kind === "device" ? "dev" : kind);
+    if (kind === "table") {
       const custom = customTables.find((p) => `custom:${p.id}` === preset);
       update((d) => addTable(d, custom && custom.kind === "table" ? { ...custom.spec, name: custom.name } : preset, pt, id));
     }
-    if (tool === "strip") {
+    if (kind === "strip") {
       const custom = customStrips.find((p) => `custom:${p.id}` === stripPreset);
       const spec = custom && custom.kind === "strip" ? custom.spec : (BUILTIN_STRIP_PRESETS.find((p) => p.id === stripPreset)?.spec ?? { sockets: 6, amps: 15 });
       update((d) => void d.strips.push({ id, label: custom?.name ?? `Strip ${d.strips.length + 1}`, x: pt.x, y: pt.y, sockets: spec.sockets, amps: spec.amps, rotation: 0, pluggedInto: null }));
     }
-    if (tool === "device") {
+    if (kind === "device") {
       const p = profiles.find((x) => x.id === profileId);
       update((d) => void d.devices.push({ id, label: `${p?.kind === "router" ? "Router" : "Switch"} ${d.devices.length + 1}`, profileId, x: pt.x, y: pt.y, rotation: 0, jackId: null, pluggedInto: null }));
     }
-    if (tool === "zone") {
+    if (kind === "zone") {
       const size = ZONE_PRESETS[zoneKind];
       update((d) => void d.zones.push({ id, label: size.label, kind: zoneKind, x: pt.x, y: pt.y, width: size.width, depth: size.depth, rotation: 0 }));
     }
+    setSelection({ kind, id });
+    return id;
+  };
+
+  const place = (pt: Point) => {
     if (tool === "table" || tool === "strip" || tool === "device" || tool === "zone") {
-      setSelection({ kind: tool === "device" ? "device" : tool, id });
+      placeItem(tool, pt);
       setTool("select");
     }
   };
@@ -197,6 +206,218 @@ export function PlanTab() {
     }
     if (best) update((d) => assignSeat(d, personId, best!.id));
     else toast("Drop a guest onto a seat.");
+  };
+
+  // ----- right-click menu -----
+  const [menu, setMenu] = useState<{ id: number; x: number; y: number; entries: MenuEntry[] } | null>(null);
+  const [clipboard, setClipboard] = useState<ObjectSnapshot | null>(null);
+  const [saveAs, setSaveAs] = useState<{ kind: "table" | "strip" | "device"; id: string } | null>(null);
+
+  const snapPoint = (p: Point): Point => (snap ? { x: Math.round(p.x * 2) / 2, y: Math.round(p.y * 2) / 2 } : p);
+  const posOf = (sel: Selection): Point | null => {
+    const list = sel.kind === "table" ? doc.tables : sel.kind === "strip" ? doc.strips : sel.kind === "device" ? doc.devices : sel.kind === "zone" ? doc.zones : [];
+    const item = (list as (Point & { id: string })[]).find((x) => x.id === sel.id);
+    return item ? { x: item.x, y: item.y } : null;
+  };
+  const snapshotLabel = (snap: ObjectSnapshot) =>
+    snap.kind === "table" ? snap.table.label : snap.kind === "strip" ? snap.strip.label : snap.kind === "device" ? snap.device.label : snap.zone.label;
+  const disconnect = (run: (d: typeof doc) => number) => {
+    let n = 0;
+    update((d) => void (n = run(d)));
+    toast(`Disconnected ${n} ${n === 1 ? "connection" : "connections"}. Press Ctrl+Z to undo.`);
+  };
+
+  /** The second level of the menu: only connections the wiring rules allow. */
+  const openWireMenu = (sel: Selection, pt: Point, screen: { x: number; y: number }) => {
+    const names = (e: { kind: string; id: string }) => (e.kind === "seat" ? seatName(doc, e.id) : undefined);
+    const options = wireOptions(venue, doc, profiles, sel, names);
+    const entries: MenuEntry[] = [
+      { label: "Back", onSelect: () => setMenu({ id: Date.now(), ...screen, entries: objectEntries(sel, pt, screen) }) },
+      { separator: true },
+    ];
+    for (const group of ["Ethernet", "Power"] as const) {
+      const inGroup = options.filter((o) => o.group === group);
+      if (inGroup.length === 0) continue;
+      entries.push({ heading: group });
+      for (const o of inGroup) {
+        entries.push({
+          label: o.disabledReason ? `${o.verb} (${o.disabledReason})` : o.verb,
+          disabled: !!o.disabledReason,
+          onSelect: () => {
+            let key: string | null = null;
+            update((d) => void (key = applyWire(d, venue, profiles, o.apply.source, o.apply.target)));
+            if (key) {
+              setSelectionRaw({ kind: "cable", id: key });
+              setPicked([]);
+              toast(`${o.verb}. Ctrl+Z to undo.`);
+            } else {
+              toast("That connection is not allowed.");
+            }
+          },
+        });
+      }
+    }
+    if (options.length === 0) entries.push({ heading: "Nothing this can be wired to" });
+    setMenu({ id: Date.now(), ...screen, entries });
+  };
+
+  const objectEntries = (sel: Selection, pt: Point, screen: { x: number; y: number }): MenuEntry[] => {
+    const entries: MenuEntry[] = [];
+    const personName = (id: string) => people.find((p) => p.id === id)?.name ?? "guest";
+
+    if (GROUPABLE.includes(sel.kind)) {
+      entries.push({
+        label: "Copy",
+        onSelect: () => {
+          const snapshot = snapshotObject(doc, sel);
+          if (snapshot) {
+            setClipboard(snapshot);
+            toast(`Copied ${snapshotLabel(snapshot) || sel.kind}. Right-click the floor to paste.`);
+          }
+        },
+      });
+      entries.push({
+        label: "Duplicate",
+        onSelect: () => {
+          const snapshot = snapshotObject(doc, sel);
+          const at = posOf(sel);
+          if (!snapshot || !at) return;
+          let made: { kind: string; id: string } | undefined;
+          update((d) => void (made = pasteObject(d, snapshot, { x: at.x + 2, y: at.y + 2 })));
+          if (made) setSelection(made as Selection);
+        },
+      });
+      entries.push({ label: "Rotate 90°", onSelect: () => update((d) => rotateObject(d, sel)) });
+
+      const members = picked.map(asMember).filter((m): m is GroupMember => !!m);
+      if (picked.length >= 2 && picked.some((p) => p.kind === sel.kind && p.id === sel.id)) {
+        entries.push({ label: `Group these ${members.length} objects`, disabled: members.length < 2, onSelect: () => { update((d) => void groupObjects(d, members)); clear(); } });
+      }
+      const g = groupedWith(sel);
+      if (g) entries.push({ label: `Ungroup${g.label ? ` "${g.label}"` : ""}`, onSelect: () => update((d) => ungroup(d, g.id)) });
+      entries.push({ separator: true });
+    }
+
+    if (sel.kind === "strip") {
+      const n = disconnectStrip(structuredClone(doc), sel.id);
+      entries.push({ label: `Disconnect everything (${n})`, disabled: n === 0, onSelect: () => disconnect((d) => disconnectStrip(d, sel.id)) });
+      entries.push({ label: "Save as a custom strip…", onSelect: () => setSaveAs({ kind: "strip", id: sel.id }) });
+    }
+    if (sel.kind === "device") {
+      const n = disconnectDevice(structuredClone(doc), sel.id);
+      entries.push({ label: `Disconnect everything (${n})`, disabled: n === 0, onSelect: () => disconnect((d) => disconnectDevice(d, sel.id)) });
+      entries.push({ label: "Save as a custom switch…", onSelect: () => setSaveAs({ kind: "device", id: sel.id }) });
+    }
+    if (sel.kind === "table") entries.push({ label: "Save as a custom table…", onSelect: () => setSaveAs({ kind: "table", id: sel.id }) });
+
+    if (sel.kind === "outlet") {
+      const n = disconnectOutlet(structuredClone(doc), sel.id);
+      entries.push({ label: `Disconnect everything (${n})`, disabled: n === 0, onSelect: () => disconnect((d) => disconnectOutlet(d, sel.id)) });
+      entries.push({
+        label: "Add an extension cord from here",
+        onSelect: () => update((d) => void d.cords.push({ id: newId("cord"), label: `Cord ${d.cords.length + 1}`, gauge: 14, amps: 15, outletId: sel.id, overrideFt: null })),
+      });
+    }
+
+    if (sel.kind === "seat") {
+      const occupant = doc.attendance.find((a) => a.seatId === sel.id);
+      const seat = doc.seats.find((x) => x.id === sel.id);
+      entries.push({ heading: seatName(doc, sel.id) });
+      if (occupant) entries.push({ label: `Unseat ${personName(occupant.personId)}`, onSelect: () => update((d) => assignSeat(d, occupant.personId, null)) });
+      const waiting = doc.attendance.filter((a) => !a.seatId && a.rsvp !== "declined");
+      if (waiting.length > 0) entries.push({ heading: occupant ? "Swap in a guest" : "Seat a guest here" });
+      for (const a of waiting.slice(0, 8)) entries.push({ label: personName(a.personId), onSelect: () => update((d) => assignSeat(d, a.personId, sel.id)) });
+      if (waiting.length > 8) entries.push({ heading: `${waiting.length - 8} more on the Roster tab` });
+      if (seat?.manual) entries.push({ label: "Snap back to table", onSelect: () => update((d) => resetSeat(d, sel.id)) });
+    }
+
+    if (sel.kind === "cable") {
+      const cn = cableConnections(venue, doc).find((c) => c.key === sel.id);
+      if (cn) {
+        entries.push({
+          label: "Add a bend here",
+          onSelect: () => {
+            const at = nearestSegment([cn.from, ...cn.waypoints, cn.to], pt);
+            update((d) => void (d.routes[cn.key] = [...cn.waypoints.slice(0, at), pt, ...cn.waypoints.slice(at)]));
+          },
+        });
+        entries.push({ label: "Clear route", disabled: cn.waypoints.length === 0, onSelect: () => update((d) => void delete d.routes[cn.key]) });
+      }
+    }
+
+    if (["door", "window", "garage", "jack", "obstacle"].includes(sel.kind)) {
+      entries.push({ heading: "Part of the venue. Edit it in the venue editor." });
+    }
+
+    if (["seat", "device", "strip", "outlet", "jack"].includes(sel.kind)) {
+      if (entries.length && !("separator" in entries[entries.length - 1]!) && !("heading" in entries[entries.length - 1]!)) entries.push({ separator: true });
+      entries.push({ label: "Wire to…", onSelect: () => openWireMenu(sel, pt, screen) });
+    }
+
+    const deletable = picked.length >= 2 && picked.some((p) => p.kind === sel.kind && p.id === sel.id) ? picked : [sel];
+    if (["table", "strip", "device", "zone", "cord", "cable"].includes(sel.kind)) {
+      if (entries.length && !("separator" in entries[entries.length - 1]!)) entries.push({ separator: true });
+      entries.push({ label: sel.kind === "cable" ? "Delete cable" : deletable.length > 1 ? `Delete ${deletable.length} objects` : "Delete", danger: true, onSelect: () => removeTargets(deletable) });
+    }
+    return entries.filter((e, i, all) => !("separator" in e) || (i > 0 && i < all.length - 1));
+  };
+
+  const floorEntries = (pt: Point): MenuEntry[] => {
+    const tableName = customTables.find((p) => `custom:${p.id}` === preset)?.name ?? TABLE_PRESETS.find((p) => p.id === preset)?.label ?? "table";
+    const stripName = customStrips.find((p) => `custom:${p.id}` === stripPreset)?.name ?? BUILTIN_STRIP_PRESETS.find((p) => p.id === stripPreset)?.name ?? "strip";
+    const switchName = profiles.find((p) => p.id === profileId)?.name ?? "switch";
+    return [
+      { heading: "Add here" },
+      { label: `Table: ${tableName}`, onSelect: () => void placeItem("table", pt) },
+      { label: `Power strip: ${stripName}`, onSelect: () => void placeItem("strip", pt) },
+      { label: `Switch: ${switchName}`, onSelect: () => void placeItem("device", pt) },
+      { label: `Zone: ${ZONE_PRESETS[zoneKind].label}`, onSelect: () => void placeItem("zone", pt) },
+      { separator: true },
+      {
+        label: clipboard ? `Paste ${snapshotLabel(clipboard) || "copy"}` : "Paste",
+        disabled: !clipboard,
+        onSelect: () => {
+          if (!clipboard) return;
+          let made: { kind: string; id: string } | undefined;
+          update((d) => void (made = pasteObject(d, clipboard, pt)));
+          if (made) setSelection(made as Selection);
+        },
+      },
+    ];
+  };
+
+  const openContextMenu = ({ target, at, screen }: { target: Selection | null; at: Point; screen: { x: number; y: number } }) => {
+    const pt = snapPoint(at);
+    if (target && !highlight.some((h) => h.kind === target.kind && h.id === target.id)) setSelection(target);
+    setMenu({ id: Date.now(), x: screen.x, y: screen.y, entries: target ? objectEntries(target, pt, screen) : floorEntries(pt) });
+  };
+
+  const saveAsSubmit = async (name: string) => {
+    if (!saveAs) return;
+    try {
+      if (saveAs.kind === "table") {
+        const t = doc.tables.find((x) => x.id === saveAs.id);
+        if (t) await api.createPreset({ kind: "table", name, spec: { shape: t.shape, width: t.width, depth: t.depth, seats: t.seats, seatWidthIn: t.seatWidthIn, seatSides: t.seatSides } });
+        await invalidate("presets");
+        toast(`Saved "${name}". Find it under Your tables when placing.`);
+      } else if (saveAs.kind === "strip") {
+        const st = doc.strips.find((x) => x.id === saveAs.id);
+        if (st) await api.createPreset({ kind: "strip", name, spec: { sockets: st.sockets, amps: st.amps } });
+        await invalidate("presets");
+        toast(`Saved "${name}". Find it under Your strips when placing.`);
+      } else {
+        const dev = doc.devices.find((x) => x.id === saveAs.id);
+        const base = profiles.find((p) => p.id === dev?.profileId);
+        if (dev) {
+          const created = await api.createProfile({ name, kind: base?.kind === "router" ? "router" : "switch", typicalW: dev.typicalW ?? base?.typicalW ?? 0, peakW: dev.peakW ?? base?.peakW ?? 0, ports: dev.ports ?? base?.ports ?? 0 });
+          await invalidate("profiles");
+          update((d) => { const t = d.devices.find((x) => x.id === dev.id); if (t) { t.profileId = created.id; t.typicalW = undefined; t.peakW = undefined; t.ports = undefined; } });
+          toast(`Saved "${name}". It is in the switch list and under Device profiles.`);
+        }
+      }
+    } catch (e) {
+      toast((e as Error).message);
+    }
   };
 
   const runAutoWire = () => {
@@ -248,6 +469,7 @@ export function PlanTab() {
             onSelect={setSelection}
             highlight={highlight}
             onToggleSelect={toggleSelect}
+            onContextMenu={openContextMenu}
             snapToObjects={snapToObjects}
             onRouteChange={(key, points) => update((d) => { if (points.length === 0) delete d.routes[key]; else d.routes[key] = points; })}
             onCanvasClick={place}
@@ -373,6 +595,17 @@ export function PlanTab() {
 
         <CordsPanel />
       </aside>
+
+      {menu && <ContextMenu key={menu.id} x={menu.x} y={menu.y} entries={menu.entries} onClose={() => setMenu(null)} />}
+      {saveAs && (
+        <NameDialog
+          title={saveAs.kind === "table" ? "Save as a custom table" : saveAs.kind === "strip" ? "Save as a custom power strip" : "Save as a custom switch"}
+          initial={(saveAs.kind === "table" ? doc.tables : saveAs.kind === "strip" ? doc.strips : doc.devices).find((x) => x.id === saveAs.id)?.label ?? ""}
+          action="Save"
+          onClose={() => setSaveAs(null)}
+          onSubmit={saveAsSubmit}
+        />
+      )}
     </div>
   );
 }

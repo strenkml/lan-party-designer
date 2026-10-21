@@ -5,6 +5,10 @@ import {
   seatsPerSideFor,
   type DeviceProfile,
   type EventDoc,
+  type InfraDevice,
+  type Seat,
+  type Strip,
+  type Zone,
   type GroupMember,
   type Person,
   type Point,
@@ -222,4 +226,236 @@ export function translateObjects(doc: EventDoc, members: GroupMember[], dx: numb
     if (m.kind === "device") doc.devices.filter((x) => x.id === m.id).forEach(shift);
     if (m.kind === "zone") doc.zones.filter((x) => x.id === m.id).forEach(shift);
   }
+}
+
+
+// ----- disconnect everything -----
+
+/** Forget hand-drawn routes for the given cable keys. */
+const dropRoutes = (doc: EventDoc, keys: string[]) => {
+  for (const k of keys) delete doc.routes[k];
+};
+
+/** Unplugs a switch or router from its seats, uplinks, wall jack and power. Returns how many connections went. */
+export function disconnectDevice(doc: EventDoc, id: string): number {
+  const dev = doc.devices.find((d) => d.id === id);
+  if (!dev) return 0;
+  let n = 0;
+  const keys: string[] = [];
+  for (const s of doc.seats) {
+    if (s.netDeviceId === id) {
+      s.netDeviceId = null;
+      s.netPort = null;
+      keys.push(`eth:${s.id}`);
+      n++;
+    }
+  }
+  const gone = doc.uplinks.filter((u) => u.fromDeviceId === id || u.toDeviceId === id);
+  for (const u of gone) keys.push(`eth:${u.id}`);
+  n += gone.length;
+  doc.uplinks = doc.uplinks.filter((u) => !gone.includes(u));
+  if (dev.jackId) {
+    dev.jackId = null;
+    keys.push(`eth:jack-${id}`);
+    n++;
+  }
+  if (dev.pluggedInto) {
+    dev.pluggedInto = null;
+    keys.push(`pwr:dev:${id}`);
+    n++;
+  }
+  dropRoutes(doc, keys);
+  return n;
+}
+
+/** Unplugs a power strip from its outlet, from its seats, and anything chained to it. */
+export function disconnectStrip(doc: EventDoc, id: string): number {
+  const strip = doc.strips.find((s) => s.id === id);
+  if (!strip) return 0;
+  let n = 0;
+  const keys: string[] = [];
+  if (strip.pluggedInto) {
+    strip.pluggedInto = null;
+    keys.push(`pwr:strip:${id}`);
+    n++;
+  }
+  for (const s of doc.seats) {
+    if (s.stripId === id) {
+      s.stripId = null;
+      n++;
+    }
+  }
+  for (const other of doc.strips) {
+    if (other.pluggedInto?.kind === "strip" && other.pluggedInto.id === id) {
+      other.pluggedInto = null;
+      keys.push(`pwr:strip:${other.id}`);
+      n++;
+    }
+  }
+  for (const d of doc.devices) {
+    if (d.pluggedInto?.kind === "strip" && d.pluggedInto.id === id) {
+      d.pluggedInto = null;
+      keys.push(`pwr:dev:${d.id}`);
+      n++;
+    }
+  }
+  dropRoutes(doc, keys);
+  return n;
+}
+
+/** Unplugs everything from a wall outlet: strips, devices and extension cords. */
+export function disconnectOutlet(doc: EventDoc, outletId: string): number {
+  let n = 0;
+  const keys: string[] = [];
+  for (const s of doc.strips) {
+    if (s.pluggedInto?.kind === "outlet" && s.pluggedInto.id === outletId) {
+      s.pluggedInto = null;
+      keys.push(`pwr:strip:${s.id}`);
+      n++;
+    }
+  }
+  for (const d of doc.devices) {
+    if (d.pluggedInto?.kind === "outlet" && d.pluggedInto.id === outletId) {
+      d.pluggedInto = null;
+      keys.push(`pwr:dev:${d.id}`);
+      n++;
+    }
+  }
+  for (const c of doc.cords) {
+    if (c.outletId === outletId) {
+      c.outletId = null;
+      keys.push(`pwr:cord:${c.id}`);
+      n++;
+    }
+  }
+  dropRoutes(doc, keys);
+  return n;
+}
+
+
+// ----- copy, paste and rotate -----
+
+export type ObjectSnapshot =
+  | { kind: "table"; table: Table }
+  | { kind: "strip"; strip: Strip }
+  | { kind: "device"; device: InfraDevice }
+  | { kind: "zone"; zone: Zone };
+
+/** A detached copy of an object, so it can be pasted later even if the original is deleted. */
+export function snapshotObject(doc: EventDoc, sel: { kind: string; id: string }): ObjectSnapshot | null {
+  const grab = <T>(list: T[], pick: (x: T) => boolean) => {
+    const item = list.find(pick);
+    return item ? structuredClone(item) : null;
+  };
+  if (sel.kind === "table") {
+    const table = grab(doc.tables, (x) => x.id === sel.id);
+    return table && { kind: "table", table };
+  }
+  if (sel.kind === "strip") {
+    const strip = grab(doc.strips, (x) => x.id === sel.id);
+    return strip && { kind: "strip", strip };
+  }
+  if (sel.kind === "device") {
+    const device = grab(doc.devices, (x) => x.id === sel.id);
+    return device && { kind: "device", device };
+  }
+  if (sel.kind === "zone") {
+    const zone = grab(doc.zones, (x) => x.id === sel.id);
+    return zone && { kind: "zone", zone };
+  }
+  return null;
+}
+
+const copyLabel = (label: string, fallback: string) => `${label || fallback} copy`;
+
+/**
+ * Adds a copy of a snapshot centred on a point. Copies start disconnected: a table gets fresh chairs
+ * with no guests or wiring, strips and switches are unplugged.
+ */
+export function pasteObject(doc: EventDoc, snap: ObjectSnapshot, at: Point): { kind: ObjectSnapshot["kind"]; id: string } {
+  if (snap.kind === "table") {
+    const id = newId("table");
+    const table: Table = { ...structuredClone(snap.table), id, x: at.x, y: at.y, label: copyLabel(snap.table.label, "Table") };
+    doc.tables.push(table);
+    doc.seats.push(...reconcileSeats(table, []));
+    return { kind: "table", id };
+  }
+  if (snap.kind === "strip") {
+    const id = newId("strip");
+    doc.strips.push({ ...structuredClone(snap.strip), id, x: at.x, y: at.y, label: copyLabel(snap.strip.label, "Strip"), pluggedInto: null });
+    return { kind: "strip", id };
+  }
+  if (snap.kind === "device") {
+    const id = newId("dev");
+    doc.devices.push({ ...structuredClone(snap.device), id, x: at.x, y: at.y, label: copyLabel(snap.device.label, "Device"), jackId: null, pluggedInto: null });
+    return { kind: "device", id };
+  }
+  const id = newId("zone");
+  doc.zones.push({ ...structuredClone(snap.zone), id, x: at.x, y: at.y, label: copyLabel(snap.zone.label, "Zone") });
+  return { kind: "zone", id };
+}
+
+/** Quarter turn clockwise. A table's chairs follow it. */
+export function rotateObject(doc: EventDoc, sel: { kind: string; id: string }) {
+  const next = (deg: number) => (((Math.round(deg) + 90) % 360) + 360) % 360;
+  if (sel.kind === "table") {
+    const t = doc.tables.find((x) => x.id === sel.id);
+    if (t) resizeTable(doc, t.id, { rotation: next(t.rotation) });
+    return;
+  }
+  const list = sel.kind === "strip" ? doc.strips : sel.kind === "device" ? doc.devices : sel.kind === "zone" ? doc.zones : [];
+  const item = (list as { id: string; rotation: number }[]).find((x) => x.id === sel.id);
+  if (item) item.rotation = next(item.rotation);
+}
+
+
+/** Removes one cable: unplugs that connection and forgets its drawn route. Returns false for an unknown key. */
+export function deleteCable(doc: EventDoc, key: string): boolean {
+  const [kind, ...rest] = key.split(":");
+  const id = rest.join(":");
+  let done = false;
+  if (kind === "eth") {
+    const seat = doc.seats.find((s) => s.id === id);
+    if (seat?.netDeviceId) {
+      seat.netDeviceId = null;
+      seat.netPort = null;
+      done = true;
+    }
+    if (doc.uplinks.some((u) => u.id === id)) {
+      doc.uplinks = doc.uplinks.filter((u) => u.id !== id);
+      done = true;
+    }
+    const jacked = doc.devices.find((d) => `jack-${d.id}` === id);
+    if (jacked?.jackId) {
+      jacked.jackId = null;
+      done = true;
+    }
+  } else if (kind === "pwr") {
+    const [what, ...more] = id.split(":");
+    const target = more.join(":");
+    if (what === "strip") {
+      const s = doc.strips.find((x) => x.id === target);
+      if (s?.pluggedInto) {
+        s.pluggedInto = null;
+        done = true;
+      }
+    } else if (what === "dev") {
+      const d = doc.devices.find((x) => x.id === target);
+      if (d?.pluggedInto) {
+        d.pluggedInto = null;
+        done = true;
+      }
+    } else if (what === "seat") {
+      const seat = doc.seats.find((x) => x.id === target);
+      if (seat?.stripId) {
+        seat.stripId = null;
+        done = true;
+      }
+    } else if (what === "cord" && doc.cords.some((c) => c.id === target)) {
+      removeCord(doc, target);
+      done = true;
+    }
+  }
+  if (done) delete doc.routes[key];
+  return done;
 }

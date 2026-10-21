@@ -46,6 +46,11 @@ export function cableConnections(venue: VenueDoc, event: EventDoc): CableConnect
     if (jack) add(`eth:jack-${d.id}`, "ethernet", d, jack);
   }
 
+  for (const seat of event.seats) {
+    const st = seat.stripId ? strips.get(seat.stripId) : undefined;
+    if (st) add(`pwr:seat:${seat.id}`, "power", seat, st);
+  }
+
   const powerTarget = (p: { kind: string; id: string } | null) =>
     p?.kind === "outlet" ? outlets.get(p.id) : p?.kind === "strip" ? strips.get(p.id) : undefined;
   for (const s of event.strips) {

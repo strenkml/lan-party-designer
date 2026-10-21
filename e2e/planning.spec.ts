@@ -569,3 +569,287 @@ test("shift-click objects, group them, and they move together", async ({ page, r
   await expect.poll(async () => (await doc()).groups.length).toBe(0);
 });
 
+test("a strip, a switch and an outlet can be fully disconnected, and undo brings it back", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await request.put(`/api/events/${event.id}`, { data: { doc: {
+    seats: [
+      { id: "s1", x: 12, y: 6, stripId: "st1", netDeviceId: "sw1", netPort: 0 },
+      { id: "s2", x: 14, y: 6, stripId: "st1", netDeviceId: "sw1", netPort: 1 },
+    ],
+    strips: [{ id: "st1", label: "Strip 1", x: 8, y: 9, pluggedInto: { kind: "outlet", id: "o1" } }],
+    devices: [{ id: "sw1", label: "Switch 1", profileId: "switch-16", x: 16, y: 9, pluggedInto: { kind: "strip", id: "st1" } }],
+  } } });
+  await page.goto(`/#/event/${event.id}/plan`);
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  await page.waitForTimeout(900);
+  const box = (await canvas.boundingBox())!;
+  const ft = (x: number, y: number) => ({ x: box.width * (0.078 + (x / 24) * 0.625), y: box.height * (0.1035 + (y / 16) * 0.502) });
+  const doc = async () => (await (await request.get(`/api/events/${event.id}`)).json()).doc;
+
+  // the switch: two seats and its power plug
+  await canvas.click({ position: ft(16, 9) });
+  await page.getByRole("button", { name: "Disconnect everything (3)" }).click();
+  await expect(page.getByText("Disconnected 3 connections. Press Ctrl+Z to undo.")).toBeVisible();
+  await expect.poll(async () => {
+    const d = await doc();
+    return [d.seats.map((s: { netDeviceId: string | null }) => s.netDeviceId), d.devices[0].pluggedInto];
+  }).toEqual([[null, null], null]);
+  await expect(page.getByRole("button", { name: "Disconnect everything" })).toBeDisabled();
+
+  // undo restores them
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press("Control+z");
+  await expect.poll(async () => (await doc()).seats.map((s: { netDeviceId: string | null }) => s.netDeviceId)).toEqual(["sw1", "sw1"]);
+
+  // the strip: its outlet plug, two seats and the switch plugged into it
+  await canvas.click({ position: ft(8, 9) });
+  await page.getByRole("button", { name: /Disconnect everything \(4\)/ }).click();
+  await expect.poll(async () => {
+    const d = await doc();
+    return [d.strips[0].pluggedInto, d.seats.map((s: { stripId: string | null }) => s.stripId), d.devices[0].pluggedInto];
+  }).toEqual([null, [null, null], null]);
+});
+
+test.describe("right-click menus", () => {
+  const eventDoc = {
+    tables: [{ id: "ta", label: "Table 1", x: 8, y: 9, width: 6, depth: 2.5, seats: 1, seatSides: "far" }],
+    seats: [{ id: "ta-a0", tableId: "ta", x: 8, y: 7.4, stripId: "st1", netDeviceId: "sw1", netPort: 0 }],
+    strips: [{ id: "st1", label: "Strip 1", x: 16, y: 9, pluggedInto: { kind: "outlet", id: "o1" } }],
+    devices: [{ id: "sw1", label: "Switch 1", profileId: "switch-16", x: 16, y: 12 }],
+    attendance: [{ personId: "p-ann", rsvp: "confirmed", seatId: null }],
+  };
+
+  async function open(page: import("@playwright/test").Page, request: APIRequestContext) {
+    const { event } = await seed(request);
+    await request.post("/api/people", { data: { name: "Ann", handle: "", devices: [], needsEthernet: false, notes: "" } });
+    const ann = (await (await request.get("/api/people")).json()).find((p: { name: string }) => p.name === "Ann");
+    await request.put(`/api/events/${event.id}`, { data: { doc: { ...eventDoc, attendance: [{ personId: ann.id, rsvp: "confirmed", seatId: null }] } } });
+    await page.goto(`/#/event/${event.id}/plan`);
+    const canvas = page.locator("canvas").first();
+    await expect(canvas).toBeVisible();
+    await page.waitForTimeout(900);
+    const box = (await canvas.boundingBox())!;
+    const ft = (x: number, y: number) => ({ x: box.width * (0.078 + (x / 24) * 0.625), y: box.height * (0.1035 + (y / 16) * 0.502) });
+    const doc = async () => (await (await request.get(`/api/events/${event.id}`)).json()).doc;
+    const right = (x: number, y: number, opts: { modifiers?: ("Shift")[] } = {}) => canvas.click({ position: ft(x, y), button: "right", ...opts });
+    return { canvas, ft, doc, right };
+  }
+  const item = (page: import("@playwright/test").Page, name: string | RegExp) =>
+    page.getByRole("menuitem", typeof name === "string" ? { name, exact: true } : { name });
+
+  test("empty floor offers to add things there, and paste", async ({ page, request }) => {
+    const { doc, right } = await open(page, request);
+    await right(20, 4);
+    await expect(page.getByRole("menu")).toBeVisible();
+    await item(page, /^Zone:/).click();
+    await expect.poll(async () => (await doc()).zones.length).toBe(1);
+
+    await right(4, 14);
+    await item(page, /^Table:/).click();
+    await expect.poll(async () => (await doc()).tables.length).toBe(2);
+    expect((await doc()).tables.at(-1).x).toBeCloseTo(4, 0);
+
+    await right(20, 14);
+    await expect(item(page, "Paste")).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
+  });
+
+  test("a table can be copied, pasted, duplicated, rotated and deleted from its menu", async ({ page, request }) => {
+    const { doc, right } = await open(page, request);
+    await right(8, 9);
+    await item(page, "Rotate 90°").click();
+    await expect.poll(async () => (await doc()).tables[0].rotation).toBe(90);
+
+    await right(8, 9);
+    await item(page, "Copy").click();
+    await right(20, 4);
+    await item(page, /^Paste Table 1/).click();
+    await expect.poll(async () => (await doc()).tables.map((t: { label: string }) => t.label)).toEqual(["Table 1", "Table 1 copy"]);
+
+    await right(8, 9);
+    await item(page, "Duplicate").click();
+    await expect.poll(async () => (await doc()).tables.length).toBe(3);
+
+    await right(8, 9);
+    await item(page, "Delete").click();
+    await expect.poll(async () => (await doc()).tables.length).toBe(2);
+  });
+
+  test("a strip and a switch offer to disconnect everything", async ({ page, request }) => {
+    const { doc, right } = await open(page, request);
+    await right(16, 12);
+    await expect(item(page, "Disconnect everything (1)")).toBeVisible(); // the seat on its port
+    await item(page, "Disconnect everything (1)").click();
+    await expect.poll(async () => (await doc()).seats[0].netDeviceId).toBeNull();
+
+    await right(16, 9);
+    await item(page, /Disconnect everything/).click();
+    await expect.poll(async () => (await doc()).strips[0].pluggedInto).toBeNull();
+  });
+
+  test("a seat offers to seat a waiting guest, with the keyboard", async ({ page, request }) => {
+    const { doc, ft, right } = await open(page, request);
+    void ft;
+    await right(8, 7.4);
+    await expect(page.getByRole("menuitem", { name: "Ann" })).toBeVisible();
+    await page.keyboard.press("ArrowDown"); // to "Wire to…"
+    await page.keyboard.press("ArrowUp"); // and back to the guest
+    await page.keyboard.press("Enter");
+    await expect.poll(async () => (await doc()).attendance[0].seatId).toBe("ta-a0");
+  });
+
+  test("a cable offers to add a bend where you clicked, and to clear the route", async ({ page, request }) => {
+    const { doc, right } = await open(page, request);
+    // the cable runs from the seat at (8, 7.4) to the switch at (16, 12); its middle is (12, 9.7)
+    await right(12, 9.7);
+    await item(page, "Add a bend here").click();
+    await expect.poll(async () => (await doc()).routes["eth:ta-a0"]?.length).toBe(1);
+
+    // the cable now bends at about (12, 9.5); right-click the second leg, toward the switch
+    await right(14, 10.75);
+    await expect(item(page, "Clear route")).toBeEnabled();
+    await item(page, "Clear route").click();
+    await expect.poll(async () => Object.keys((await doc()).routes)).toEqual([]);
+  });
+
+  test("shift + right-click leaves the browser's own menu alone", async ({ page, request }) => {
+    const { right } = await open(page, request);
+    await right(20, 4, { modifiers: ["Shift"] });
+    await expect(page.getByRole("menu")).toHaveCount(0);
+  });
+
+  test("the venue editor menu adds doors onto walls and flips them", async ({ page, request }) => {
+    const venue = await (await request.post("/api/venues", { data: { name: "Menu venue" } })).json();
+    await request.put(`/api/venues/${venue.id}`, { data: { doc: { room: [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 16 }, { x: 0, y: 16 }], circuits: [{ id: "c1", label: "Kitchen", amps: 15 }] } } });
+    await page.goto(`/#/venue/${venue.id}`);
+    const canvas = page.locator("canvas").first();
+    await expect(canvas).toBeVisible();
+    await page.waitForTimeout(900);
+    const box = (await canvas.boundingBox())!;
+    const at = (x: number, y: number) => ({ x: box.width * (0.078 + (x / 24) * 0.625), y: box.height * (0.1035 + (y / 16) * 0.502) });
+    const doc = async () => (await (await request.get(`/api/venues/${venue.id}`)).json()).doc;
+
+    await canvas.click({ position: at(8, 0.6), button: "right" });
+    await item(page, "Door").click();
+    await expect.poll(async () => { const d = (await doc()).doors[0]; return [d?.y, d?.rotation]; }).toEqual([0, 0]);
+
+    await canvas.click({ position: at(8, 0.4), button: "right" }); // on the door
+    await item(page, "Swing out of the room").click();
+    await expect.poll(async () => (await doc()).doors[0].flipSwing).toBe(true);
+
+    await canvas.click({ position: at(16, 16), button: "right" });
+    await item(page, "Outlet").click();
+    await expect.poll(async () => (await doc()).outlets.length).toBe(1);
+  });
+});
+
+test("a cable can be deleted with the Delete key, the panel or the right-click menu", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await request.put(`/api/events/${event.id}`, { data: { doc: {
+    seats: [
+      { id: "s1", x: 8, y: 7.4, stripId: "st1", netDeviceId: "sw1", netPort: 0 },
+      { id: "s2", x: 8, y: 11, netDeviceId: "sw1", netPort: 1 },
+    ],
+    strips: [{ id: "st1", label: "Strip 1", x: 16, y: 9, pluggedInto: { kind: "outlet", id: "o1" } }],
+    devices: [{ id: "sw1", label: "Switch 1", profileId: "switch-16", x: 16, y: 13 }],
+  } } });
+  await page.goto(`/#/event/${event.id}/plan`);
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  await page.waitForTimeout(900);
+  const box = (await canvas.boundingBox())!;
+  const ft = (x: number, y: number) => ({ x: box.width * (0.078 + (x / 24) * 0.625), y: box.height * (0.1035 + (y / 16) * 0.502) });
+  const doc = async () => (await (await request.get(`/api/events/${event.id}`)).json()).doc;
+
+  // Delete key: select the first ethernet cable (seat 1 to the switch), midpoint (12, 10.2)
+  await canvas.click({ position: ft(12, 10.2) });
+  await expect(page.getByRole("heading", { name: "Ethernet cable" })).toBeVisible();
+  await page.keyboard.press("Delete");
+  await expect.poll(async () => (await doc()).seats.map((s: { netDeviceId: string | null }) => s.netDeviceId)).toEqual([null, "sw1"]);
+
+  // right-click menu: the second ethernet cable, midpoint (12, 12)
+  await canvas.click({ position: ft(12, 12), button: "right" });
+  await page.getByRole("menuitem", { name: "Delete cable", exact: true }).click();
+  await expect.poll(async () => (await doc()).seats.map((s: { netDeviceId: string | null }) => s.netDeviceId)).toEqual([null, null]);
+
+  // panel button: the power link from seat 1 to the strip, midpoint (12, 8.2)
+  await canvas.click({ position: ft(12, 8.2) });
+  await expect(page.getByRole("heading", { name: "Power cable" })).toBeVisible();
+  await page.getByRole("button", { name: "Delete cable" }).click();
+  await expect.poll(async () => (await doc()).seats[0].stripId).toBeNull();
+});
+
+test.describe("wire to menu", () => {
+  async function open(page: import("@playwright/test").Page, request: APIRequestContext, eventDoc: object) {
+    const { event } = await seed(request);
+    await request.put(`/api/events/${event.id}`, { data: { doc: eventDoc } });
+    await page.goto(`/#/event/${event.id}/plan`);
+    const canvas = page.locator("canvas").first();
+    await expect(canvas).toBeVisible();
+    await page.waitForTimeout(900);
+    const box = (await canvas.boundingBox())!;
+    const ft = (x: number, y: number) => ({ x: box.width * (0.078 + (x / 24) * 0.625), y: box.height * (0.1035 + (y / 16) * 0.502) });
+    const doc = async () => (await (await request.get(`/api/events/${event.id}`)).json()).doc;
+    const right = (x: number, y: number) => canvas.click({ position: ft(x, y), button: "right" });
+    return { doc, right };
+  }
+  const items = (page: import("@playwright/test").Page) => page.getByRole("menuitem");
+  const wireTo = (page: import("@playwright/test").Page) => page.getByRole("menuitem", { name: "Wire to…", exact: true }).click();
+
+  const plan = {
+    seats: [{ id: "s1", label: "A1", x: 8, y: 7.4 }, { id: "s2", label: "A2", x: 11, y: 7.4, netDeviceId: "sw2", netPort: 0 }],
+    strips: [{ id: "st1", label: "Strip 1", x: 8, y: 12 }, { id: "st2", label: "Strip 2", x: 12, y: 12, pluggedInto: { kind: "strip", id: "st1" } }],
+    devices: [
+      { id: "sw1", label: "Switch 1", profileId: "switch-16", x: 16, y: 12 },
+      { id: "sw2", label: "Switch 2", profileId: "switch-16", x: 20, y: 12, ports: 1 },
+      { id: "tv1", label: "Big TV", profileId: "tv-55", x: 16, y: 5 },
+    ],
+  };
+
+  test("a seat is offered switches and strips, never other seats, TVs or outlets", async ({ page, request }) => {
+    const { doc, right } = await open(page, request, plan);
+    await right(8, 7.4);
+    await wireTo(page);
+    await expect(page.getByRole("menuitem", { name: "Ethernet to Switch 1", exact: true })).toBeVisible();
+    await expect(page.getByRole("menuitem", { name: "Power from Strip 1", exact: true })).toBeVisible();
+    await expect(items(page).filter({ hasText: /TV|seat|A2|North wall/i })).toHaveCount(0);
+    // a switch with no free port is listed but cannot be picked
+    await expect(page.getByRole("menuitem", { name: "Ethernet to Switch 2 (No free ports)" })).toBeDisabled();
+
+    await page.getByRole("menuitem", { name: "Ethernet to Switch 1", exact: true }).click();
+    await expect.poll(async () => { const s = (await doc()).seats[0]; return [s.netDeviceId, s.netPort]; }).toEqual(["sw1", 0]);
+    await expect(page.getByRole("heading", { name: "Ethernet cable" })).toBeVisible(); // the new cable is selected
+  });
+
+  test("a TV can be plugged in but has no ethernet options", async ({ page, request }) => {
+    const { doc, right } = await open(page, request, plan);
+    await right(16, 5);
+    await wireTo(page);
+    await expect(items(page).filter({ hasText: /Ethernet|Uplink/ })).toHaveCount(0);
+    await page.getByRole("menuitem", { name: "Plug into North wall", exact: true }).click();
+    await expect.poll(async () => (await doc()).devices[2].pluggedInto).toEqual({ kind: "outlet", id: "o1" });
+  });
+
+  test("a strip will not offer to plug into a strip that is plugged into it", async ({ page, request }) => {
+    const { right } = await open(page, request, plan);
+    await right(8, 12);
+    await wireTo(page);
+    await expect(page.getByRole("menuitem", { name: "Plug into Strip 2", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("menuitem", { name: "Plug into North wall", exact: true })).toBeVisible();
+    // and the way back works
+    await page.getByRole("menuitem", { name: "Back", exact: true }).click();
+    await expect(page.getByRole("menuitem", { name: "Wire to…", exact: true })).toBeVisible();
+  });
+
+  test("a switch can uplink to another switch", async ({ page, request }) => {
+    const { doc, right } = await open(page, request, plan);
+    await right(16, 12);
+    await wireTo(page);
+    await page.getByRole("menuitem", { name: "Uplink to Switch 2 (No free ports)" }).isVisible();
+    await expect(page.getByRole("menuitem", { name: "Uplink to Switch 2 (No free ports)" })).toBeDisabled(); // Switch 2 has one port and a seat on it
+    void doc;
+  });
+});
+

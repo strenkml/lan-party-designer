@@ -8,6 +8,10 @@ import { Gauge, LevelBadge, NameDialog, NumberField, TextField, newId, toast } f
 import {
   assignSeat,
   decodePlug,
+  deleteCable,
+  disconnectDevice,
+  disconnectOutlet,
+  disconnectStrip,
   groupObjects,
   ungroup,
   removeZone,
@@ -89,7 +93,8 @@ function CableInspector({ routeKey, clear }: { routeKey: string; clear: () => vo
       <h3>{cn.kind === "ethernet" ? "Ethernet cable" : "Power cable"}</h3>
       <p style={{ margin: 0 }}><strong>{cn.fromName}</strong> to <strong>{cn.toName}</strong></p>
       <p className="muted" style={{ margin: 0 }}>
-        {cn.waypoints.length === 0 ? "Straight across the floor." : `${cn.waypoints.length} bend${cn.waypoints.length === 1 ? "" : "s"}.`} Needs a {length} ft cable, including slack and the drop at each end.
+        {cn.waypoints.length === 0 ? "Straight across the floor." : `${cn.waypoints.length} bend${cn.waypoints.length === 1 ? "" : "s"}.`}
+        {length > 0 ? ` Needs a ${length} ft cable, including slack and the drop at each end.` : ""}
       </p>
       <div className="row">
         <button className="btn" onClick={addBend}>Add a bend</button>
@@ -98,7 +103,10 @@ function CableInspector({ routeKey, clear }: { routeKey: string; clear: () => vo
       <p className="muted" style={{ margin: 0 }}>
         Drag the dots to reshape the route. Click a + to add a bend there. Double-click a dot to remove it.
       </p>
-      <button className="btn" onClick={clear}>Done</button>
+      <div className="row">
+        <button className="btn" onClick={clear}>Done</button>
+        <button className="btn danger" onClick={() => { update((d) => void deleteCable(d, routeKey)); clear(); }}>Delete cable</button>
+      </div>
     </section>
   );
 }
@@ -174,6 +182,23 @@ export function MultiInspector({ picked, clear }: { picked: Selection[]; clear: 
       </button>
       <p className="muted" style={{ margin: 0 }}>Shift-click to add or remove objects. Drag any one of them to move them all.</p>
     </section>
+  );
+}
+
+/** Unplugs everything attached to one item. Undo with Ctrl+Z brings it all back. */
+function DisconnectButton({ count, run }: { count: number; run: () => number }) {
+  return (
+    <button
+      className="btn"
+      disabled={count === 0}
+      title={count === 0 ? "Nothing is connected" : `Remove all ${count} connections`}
+      onClick={() => {
+        const n = run();
+        toast(`Disconnected ${n} ${n === 1 ? "connection" : "connections"}. Press Ctrl+Z to undo.`);
+      }}
+    >
+      Disconnect everything{count > 0 ? ` (${count})` : ""}
+    </button>
   );
 }
 
@@ -342,6 +367,10 @@ function StripInspector({ id, clear }: { id: string; clear: () => void }) {
       {r && (
         <Gauge label="Load" level={r.level} typicalA={r.typicalA} peakA={r.peakA} ratingA={r.ratingA} detail={`${r.socketsUsed} of ${r.socketsTotal} sockets used`} />
       )}
+      <DisconnectButton
+        count={disconnectStrip(structuredClone(doc), id)}
+        run={() => { let n = 0; update((d) => void (n = disconnectStrip(d, id))); return n; }}
+      />
       <button className="btn" onClick={() => setSaving(true)}>Save as a custom strip…</button>
       {saving && (
         <NameDialog
@@ -414,6 +443,10 @@ function DeviceInspector({ id, clear }: { id: string; clear: () => void }) {
           {others.map((d) => <option key={d.id} value={d.id}>{d.label || d.id}</option>)}
         </select>
       )}
+      <DisconnectButton
+        count={disconnectDevice(structuredClone(doc), id)}
+        run={() => { let n = 0; update((d) => void (n = disconnectDevice(d, id))); return n; }}
+      />
       <button className="btn" onClick={() => setSaving(true)}>Save as a custom switch…</button>
       {saving && (
         <NameDialog
@@ -454,6 +487,10 @@ function OutletInspector({ id }: { id: string }) {
       <h3>{outletName(venue, id)}</h3>
       <p className="muted">{circuit ? `On ${circuit.label} (${circuit.amps}A)` : "Breaker unknown. Load here is unverified."}</p>
       <Gauge label="Outlet load" level={r.level} typicalA={r.typicalA} peakA={r.peakA} ratingA={r.ratingA} detail={`${r.socketsUsed} of ${r.socketsTotal} plugs used`} />
+      <DisconnectButton
+        count={disconnectOutlet(structuredClone(doc), id)}
+        run={() => { let n = 0; update((d) => void (n = disconnectOutlet(d, id))); return n; }}
+      />
       <button className="btn" onClick={() => update((d) => void d.cords.push({ id: newId("cord"), label: `Cord ${doc.cords.length + 1}`, gauge: 14, amps: 15, outletId: id, overrideFt: null }))}>
         Add extension cord from here
       </button>
