@@ -7,7 +7,7 @@ export interface WallSnap {
   wallIndex: number;
 }
 
-const inside = (poly: Point[], p: Point) => {
+export const pointInPolygon = (poly: Point[], p: Point) => {
   let hit = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     const a = poly[i]!;
@@ -42,7 +42,7 @@ export function snapToWall(room: Point[], at: Point, opts: { maxDistFt: number }
   const normal = { x: -best.dir.y, y: best.dir.x };
   const probe = { x: best.point.x + normal.x * 0.5, y: best.point.y + normal.y * 0.5 };
   let rotation = (Math.atan2(best.dir.y, best.dir.x) * 180) / Math.PI;
-  if (!inside(room, probe)) rotation += 180;
+  if (!pointInPolygon(room, probe)) rotation += 180;
   rotation = ((rotation + 180) % 360) - 180;
   if (rotation === -180) rotation = 180;
   const round = (n: number) => Math.round(n * 1e6) / 1e6;

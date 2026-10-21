@@ -53,4 +53,16 @@ describe("eventOps", () => {
     });
     expect(freePorts(doc, "sw", 4)).toEqual([1, 2]);
   });
+
+  it("moving seats to one side unseats guests on the side that goes away", () => {
+    const doc = empty();
+    addTable(doc, "folding-6", { x: 0, y: 0 }, "t1");
+    doc.attendance.push(
+      { personId: "ann", rsvp: "confirmed", seatId: "t1-a0" },
+      { personId: "bob", rsvp: "confirmed", seatId: "t1-b0" },
+    );
+    resizeTable(doc, "t1", { seatSides: "far" });
+    expect(doc.seats.map((s) => s.id)).toEqual(["t1-a0", "t1-a1"]);
+    expect(doc.attendance.map((a) => a.seatId)).toEqual(["t1-a0", null]);
+  });
 });

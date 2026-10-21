@@ -11,7 +11,7 @@ A self-hosted planner for LAN parties of 4 to 20 people. Lay out the room and ta
 - **Roster** is a global people directory with their usual gear. Each event tracks RSVP, seat and per-event device changes. Drag guests onto seats on the plan or pick a seat from a list.
 - **Reports** show breaker loads, strip status, switch port maps and a shopping list. Print the seat map from the browser. Count confirmed guests only, or confirmed and invited, and optionally fill empty seats with a placeholder PC for a worst case view.
 - **Setup day** is a per-seat checklist (power, ethernet, tested) with overall progress.
-- **Auto-wire** assigns unwired seats to the nearest strip with room and the nearest switch with a free port. It never changes wiring you set by hand and lists what it could not place.
+- **Auto-wire** assigns every unwired seat, including empty ones, to the nearest strip with room and the nearest switch with a free port. It never changes wiring you set by hand and lists what it could not place.
 - Undo and redo (Ctrl+Z, Ctrl+Shift+Z), autosave about one second after each change, named snapshots (restoring first saves a "Before restore" copy), JSON export and import.
 - Light, dark or system theme. On phones and tablets the plan is a read-only seat map with guest lookup.
 

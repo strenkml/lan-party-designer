@@ -51,8 +51,10 @@ export function SeatMap(props: {
         {venue.doors.map((d) => (
           <g key={d.id} transform={`translate(${d.x} ${d.y}) rotate(${d.rotation})`}>
             <rect x={-d.width / 2} y={-0.2} width={d.width} height={0.4} fill="var(--floor)" />
-            <line x1={-d.width / 2} y1={0} x2={-d.width / 2} y2={d.width} stroke="var(--ink)" strokeWidth={0.12} />
-            <path d={`M ${d.width / 2} 0 A ${d.width} ${d.width} 0 0 1 ${-d.width / 2} ${d.width}`} fill="none" stroke="var(--ink-2)" strokeWidth={0.06} strokeDasharray="0.2 0.2" />
+            <g transform={`scale(${d.flipHinge ? -1 : 1} ${d.flipSwing ? -1 : 1})`}>
+              <line x1={-d.width / 2} y1={0} x2={-d.width / 2} y2={d.width} stroke="var(--ink)" strokeWidth={0.12} />
+              <path d={`M ${d.width / 2} 0 A ${d.width} ${d.width} 0 0 1 ${-d.width / 2} ${d.width}`} fill="none" stroke="var(--ink-2)" strokeWidth={0.06} strokeDasharray="0.2 0.2" />
+            </g>
           </g>
         ))}
         {venue.outlets.map((o) => {

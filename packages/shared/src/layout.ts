@@ -41,7 +41,7 @@ export function layoutSeats(table: Table): Placed[] {
   const lx = (i: number) => (i + 0.5) * step - table.width / 2;
   const far = Array.from({ length: table.seats }, (_, i) => place(`${table.id}-a${i}`, lx(i), -offsetY, 0));
   const near = Array.from({ length: table.seats }, (_, i) => place(`${table.id}-b${i}`, lx(i), offsetY, 180));
-  return [...far, ...near];
+  return [...(table.seatSides === "near" ? [] : far), ...(table.seatSides === "far" ? [] : near)];
 }
 
 /**

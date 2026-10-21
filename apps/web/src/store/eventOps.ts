@@ -39,6 +39,7 @@ export function addTable(doc: EventDoc, presetId: string, at: Point, id: string)
     rotation: 0,
     seats: preset.shape === "round" ? 6 : seatsPerSideFor(preset.width),
     seatWidthIn: 36,
+    seatSides: "both",
   };
   doc.tables.push(table);
   doc.seats.push(...reconcileSeats(table, []));

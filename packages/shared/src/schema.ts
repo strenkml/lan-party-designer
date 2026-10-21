@@ -77,6 +77,10 @@ export const Door = z.object({
   y: z.number(),
   width: z.number().positive().default(3),
   rotation: z.number().default(0),
+  /** Swing out of the room instead of into it. */
+  flipSwing: z.boolean().default(false),
+  /** Hinge on the other side of the opening. */
+  flipHinge: z.boolean().default(false),
 });
 export type Door = z.infer<typeof Door>;
 
@@ -127,6 +131,8 @@ export const Table = z.object({
   /** Seats per long side (rect) or total seats (round). */
   seats: z.number().int().nonnegative(),
   seatWidthIn: z.number().positive().default(36),
+  /** Which long edges get seats. "far" is the top edge before rotation, "near" the bottom. Round tables ignore this. */
+  seatSides: z.enum(["both", "far", "near"]).default("both"),
 });
 export type Table = z.infer<typeof Table>;
 

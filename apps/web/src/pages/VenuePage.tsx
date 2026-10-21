@@ -45,6 +45,7 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
   const [tool, setTool] = useState<Tool>("select");
   const [selection, setSelection] = useState<Selection | null>(null);
   const [snap, setSnap] = useState(true);
+  const [showDimensions, setShowDimensions] = useState(true);
   const [roomDraft, setRoomDraft] = useState<Point[]>([]);
   const [calibration, setCalibration] = useState<Point[]>([]);
   const [paintCircuit, setPaintCircuit] = useState<string | null>(null);
@@ -97,7 +98,7 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
     }
     const spot = wall?.point ?? pt;
     update((d) => {
-      if (tool === "door") d.doors.push({ id: newIdValue, x: spot.x, y: spot.y, width: 3, rotation: wall?.rotation ?? 0 });
+      if (tool === "door") d.doors.push({ id: newIdValue, x: spot.x, y: spot.y, width: 3, rotation: wall?.rotation ?? 0, flipSwing: false, flipHinge: false });
       if (tool === "obstacle") d.obstacles.push({ id: newIdValue, label: "Obstacle", x: pt.x, y: pt.y, width: 3, depth: 3, rotation: 0 });
       if (tool === "outlet") d.outlets.push({ id: newIdValue, label: "", x: spot.x, y: spot.y, circuitId: paintCircuit, amps: 15, sockets: 2 });
     });
@@ -164,6 +165,7 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
           snap={snap}
           showPower
           showNet
+          showDimensions={showDimensions}
           roomDraft={roomDraft}
           calibration={calibration}
           levels={{}}
@@ -183,6 +185,10 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
             <label className="check field">
               <input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} />
               Snap to half-foot grid
+            </label>
+            <label className="check field">
+              <input type="checkbox" checked={showDimensions} onChange={(e) => setShowDimensions(e.target.checked)} />
+              Show wall and door dimensions
             </label>
             {paintCircuit && (
               <div className="badge warn" role="status">
@@ -256,7 +262,17 @@ function Inspector({ selection }: { selection: Selection | null }) {
       <section>
         <h3>Door</h3>
         <NumberField label="Width" suffix="ft" value={o.width} min={1} onChange={(v) => set((t) => void (t.width = v))} />
-        <NumberField label="Rotation" suffix="deg" step={90} value={o.rotation} onChange={(v) => set((t) => void (t.rotation = v))} />
+        <div className="row">
+          <button className="btn" onClick={() => set((t) => void (t.flipSwing = !t.flipSwing))}>
+            Swing {o.flipSwing ? "into the room" : "out of the room"}
+          </button>
+          <button className="btn" onClick={() => set((t) => void (t.flipHinge = !t.flipHinge))}>
+            Move hinge to {o.flipHinge ? "left" : "right"}
+          </button>
+        </div>
+        <p className="muted" style={{ margin: 0 }}>
+          Currently swings {o.flipSwing ? "out of" : "into"} the room, hinged on the {o.flipHinge ? "right" : "left"}.
+        </p>
       </section>
     );
   }

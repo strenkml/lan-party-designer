@@ -127,3 +127,64 @@ describe("autoWire network", () => {
     expect(wired.seats[0]?.netDeviceId).toBe("swB");
   });
 });
+
+describe("autoWire empty seats", () => {
+  const sw = { id: "sw", profileId: "sw", x: 0, y: 0, ports: 4 };
+
+  it("wires seats with no guest to a strip and a switch port", () => {
+    const event = EventDoc.parse({
+      seats: [seat("s1", 1), seat("s2", 2)],
+      strips: [{ id: "st", x: 0, y: 0, sockets: 6, pluggedInto: plugged }],
+      devices: [sw],
+    });
+    const { event: wired, unplaced } = autoWire({ venue, event, people: [], profiles });
+    expect(wired.seats.map((s) => [s.stripId, s.netDeviceId, s.netPort])).toEqual([
+      ["st", "sw", 0],
+      ["st", "sw", 1],
+    ]);
+    expect(unplaced).toEqual([]);
+  });
+
+  it("also wires seats whose guest is unseated, declined or not in the event", () => {
+    const event = EventDoc.parse({
+      seats: [seat("s1", 1), seat("s2", 2)],
+      strips: [{ id: "st", x: 0, y: 0, pluggedInto: plugged }],
+      devices: [sw],
+      attendance: [
+        { personId: "ann", rsvp: "confirmed", seatId: null },
+        { personId: "bob", rsvp: "declined", seatId: "s2" },
+      ],
+    });
+    const { event: wired } = autoWire({ venue, event, people: [person("ann"), person("bob")], profiles });
+    expect(wired.seats.every((s) => s.stripId === "st" && s.netDeviceId === "sw")).toBe(true);
+  });
+
+  it("reserves one socket per empty seat and no power budget", () => {
+    // a 15A strip with 1 socket left is full of PCs by watts, but an empty seat only needs the socket
+    const event = EventDoc.parse({
+      seats: [seat("s1", 1, { stripId: "st" }), seat("s2", 2)],
+      strips: [{ id: "st", x: 0, y: 0, sockets: 2, amps: 15, pluggedInto: plugged }],
+      attendance: [sit("ann", "s1")],
+    });
+    const heavy = { ...person("ann", false), devices: [{ profileId: "pc", typicalW: 1430, peakW: 1500 }] };
+    const { event: wired } = autoWire({ venue, event, people: [heavy], profiles });
+    expect(wired.seats[1]?.stripId).toBe("st");
+  });
+
+  it("reports an empty seat that has nowhere to plug in", () => {
+    const event = EventDoc.parse({ seats: [seat("s1", 1)] });
+    const { unplaced } = autoWire({ venue, event, people: [], profiles });
+    expect(unplaced.map((u) => [u.seatId, u.kind])).toEqual([["s1", "power"], ["s1", "network"]]);
+  });
+
+  it("still leaves a seated guest who needs no ethernet off the network", () => {
+    const event = EventDoc.parse({
+      seats: [seat("s1", 1, { stripId: "st" }), seat("s2", 2, { stripId: "st" })],
+      strips: [{ id: "st", x: 0, y: 0, pluggedInto: plugged }],
+      devices: [sw],
+      attendance: [sit("ann", "s1")],
+    });
+    const { event: wired } = autoWire({ venue, event, people: [person("ann", false)], profiles });
+    expect(wired.seats.map((s) => s.netDeviceId)).toEqual([null, "sw"]);
+  });
+});

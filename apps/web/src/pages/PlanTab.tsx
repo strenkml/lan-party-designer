@@ -27,6 +27,7 @@ export function PlanTab() {
   const [snap, setSnap] = useState(true);
   const [showPower, setShowPower] = useState(true);
   const [showNet, setShowNet] = useState(true);
+  const [showDimensions, setShowDimensions] = useState(false);
   const [preset, setPreset] = useState("folding-6");
   const [profileId, setProfileId] = useState("switch-16");
   const [unplaced, setUnplaced] = useState<{ seatId: string; kind: string; reason: string }[]>([]);
@@ -132,6 +133,7 @@ export function PlanTab() {
             snap={snap}
             showPower={showPower}
             showNet={showNet}
+            showDimensions={showDimensions}
             roomDraft={[]}
             calibration={[]}
             levels={levels}
@@ -172,6 +174,7 @@ export function PlanTab() {
           <label className="check field"><input type="checkbox" checked={snap} onChange={(e) => setSnap(e.target.checked)} />Snap to half-foot grid</label>
           <label className="check field"><input type="checkbox" checked={showPower} onChange={(e) => setShowPower(e.target.checked)} /><span style={{ color: "var(--power)" }}>Show power wiring</span></label>
           <label className="check field"><input type="checkbox" checked={showNet} onChange={(e) => setShowNet(e.target.checked)} /><span style={{ color: "var(--net)" }}>Show network cables</span></label>
+          <label className="check field"><input type="checkbox" checked={showDimensions} onChange={(e) => setShowDimensions(e.target.checked)} />Show wall and door dimensions</label>
           {tool === "table" && (
             <label className="field">Table to place
               <select value={preset} onChange={(e) => setPreset(e.target.value)}>
@@ -187,6 +190,7 @@ export function PlanTab() {
             </label>
           )}
           <button className="btn primary" onClick={runAutoWire} disabled={doc.seats.length === 0}>Auto-wire seats</button>
+          <p className="muted" style={{ margin: 0 }}>Wires every unwired seat, including empty ones. Wiring you set by hand is never changed.</p>
           {unplaced.length > 0 && (
             <ul className="warnlist" aria-label="Seats auto-wire could not place">
               {unplaced.map((u, i) => (

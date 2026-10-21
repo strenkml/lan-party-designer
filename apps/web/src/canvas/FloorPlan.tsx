@@ -4,6 +4,7 @@ import { Circle, Group, Image as KImage, Layer, Line, Rect, Shape, Stage, Text }
 import { type EventDoc, type Level, type Point, type VenueDoc } from "@lpd/shared";
 import { uploadUrl } from "../lib/api";
 import { useCssColors } from "../theme/theme";
+import { wallDimensions } from "../lib/dimensions";
 import { guideRoomPoint, type GuidedPoint } from "../lib/guides";
 import { useImage } from "./useImage";
 
@@ -36,6 +37,8 @@ export interface FloorPlanProps {
   snap: boolean;
   showPower: boolean;
   showNet: boolean;
+  /** Measurements along each wall, split at doors. */
+  showDimensions?: boolean;
   /** Pending room outline points while the room tool is active. */
   roomDraft: Point[];
   calibration: Point[];
@@ -77,6 +80,11 @@ export function FloorPlan(props: FloorPlanProps) {
     setSize({ w: el.clientWidth, h: el.clientHeight });
     return () => ro.disconnect();
   }, []);
+
+  const dims = useMemo(
+    () => (props.showDimensions ? wallDimensions(venue.room, venue.doors) : []),
+    [props.showDimensions, venue.room, venue.doors],
+  );
 
   const circuitColor = useMemo(() => {
     const map = new Map<string, string>();
@@ -310,14 +318,51 @@ export function FloorPlan(props: FloorPlanProps) {
             }).flat();
             return (
               <Group key={d.id} x={d.x * PPF} y={d.y * PPF} rotation={d.rotation} {...dragProps({ kind: "door", id: d.id })}>
-                {/* hit area: the opening and its swing */}
-                <Rect x={-w / 2 - 4} y={-8} width={w + 8} height={w + 8} fill="transparent" />
+                {/* leaf, swing and hit area mirror with the flip options */}
+                <Group scaleX={d.flipHinge ? -1 : 1} scaleY={d.flipSwing ? -1 : 1}>
+                  <Rect x={-w / 2 - 4} y={-8} width={w + 8} height={w + 8} fill="transparent" />
+                  <Line points={[-w / 2, 0, -w / 2, w]} stroke={stroke} strokeWidth={2} listening={false} />
+                  <Line points={arc} stroke={sel ? c.focus : c["ink-2"]} strokeWidth={1} dash={[3, 3]} listening={false} />
+                </Group>
                 {/* gap cut into the wall */}
                 <Rect x={-w / 2} y={-4} width={w} height={8} fill={c.floor} listening={false} />
                 <Line points={[-w / 2, -5, -w / 2, 5]} stroke={stroke} strokeWidth={3} listening={false} />
                 <Line points={[w / 2, -5, w / 2, 5]} stroke={stroke} strokeWidth={3} listening={false} />
-                <Line points={[-w / 2, 0, -w / 2, w]} stroke={stroke} strokeWidth={2} listening={false} />
-                <Line points={arc} stroke={sel ? c.focus : c["ink-2"]} strokeWidth={1} dash={[3, 3]} listening={false} />
+              </Group>
+            );
+          })}
+
+          {/* wall dimensions */}
+          {dims.map((w) => {
+            const fs = 11 / view.scale;
+            const off = 1.1;
+            const pt = (ft: number, extra = off) => ({
+              x: (w.a.x + ((w.b.x - w.a.x) / w.lengthFt) * ft + w.outward.x * extra) * PPF,
+              y: (w.a.y + ((w.b.y - w.a.y) / w.lengthFt) * ft + w.outward.y * extra) * PPF,
+            });
+            return (
+              <Group key={`dim${w.index}`} listening={false}>
+                {w.spans.map((sp, i) => {
+                  const p0 = pt(sp.startFt);
+                  const p1 = pt(sp.endFt);
+                  const label = `${sp.lengthFt} ft`;
+                  const mid = { x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2 };
+                  const lw = (label.length * 6.2 + 8) / view.scale;
+                  const color = sp.kind === "door" ? c.focus : c["ink-2"];
+                  const t0 = pt(sp.startFt, off - 0.35);
+                  const t1 = pt(sp.startFt, off + 0.35);
+                  const t2 = pt(sp.endFt, off - 0.35);
+                  const t3 = pt(sp.endFt, off + 0.35);
+                  return (
+                    <Group key={i}>
+                      <Line points={[p0.x, p0.y, p1.x, p1.y]} stroke={color} strokeWidth={1} strokeScaleEnabled={false} />
+                      <Line points={[t0.x, t0.y, t1.x, t1.y]} stroke={color} strokeWidth={1} strokeScaleEnabled={false} />
+                      <Line points={[t2.x, t2.y, t3.x, t3.y]} stroke={color} strokeWidth={1} strokeScaleEnabled={false} />
+                      <Rect x={mid.x - lw / 2} y={mid.y - fs * 0.75} width={lw} height={fs * 1.5} fill={c.panel} opacity={0.9} cornerRadius={3 / view.scale} />
+                      <Text text={label} x={mid.x - lw / 2} y={mid.y - fs * 0.5} width={lw} align="center" fontSize={fs} fill={color} fontStyle={sp.kind === "door" ? "bold" : "normal"} />
+                    </Group>
+                  );
+                })}
               </Group>
             );
           })}

@@ -81,6 +81,21 @@ function TableInspector({ id, clear }: { id: string; clear: () => void }) {
         <div style={{ flex: 1 }}><NumberField label={t.shape === "round" ? "Seats" : "Seats per side"} step={1} min={0} value={t.seats} onChange={(seats) => patch({ seats: Math.max(0, Math.round(seats)) })} /></div>
         <div style={{ flex: 1 }}><NumberField label="Rotation" suffix="deg" step={15} value={t.rotation} onChange={(rotation) => patch({ rotation })} /></div>
       </div>
+      {t.shape === "rect" && (
+        <label className="field">
+          Seats on
+          <select value={t.seatSides} onChange={(e) => patch({ seatSides: e.target.value as typeof t.seatSides })}>
+            <option value="both">Both long sides</option>
+            <option value="far">One side (top edge)</option>
+            <option value="near">One side (bottom edge)</option>
+          </select>
+        </label>
+      )}
+      {t.shape === "rect" && t.seatSides !== "both" && (
+        <p className="muted" style={{ margin: 0 }}>
+          Guests seated on the side you switch off become unseated. Rotate the table to choose which wall the seats face.
+        </p>
+      )}
       <button className="btn danger" onClick={() => { update((d) => removeTable(d, id)); clear(); }}>Delete table and seats</button>
     </section>
   );

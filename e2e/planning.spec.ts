@@ -261,6 +261,24 @@ test.describe("venue editor placement", () => {
     }).toEqual([1, 1]);
   });
 
+  test("a door can be flipped to swing the other way and hinge on the other side", async ({ page, request }) => {
+    const { venue, canvas } = await openVenue(page, request);
+    await request.put(`/api/venues/${venue.id}`, { data: { doc: { room: [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 16 }, { x: 0, y: 16 }] } } });
+    await page.reload();
+    await page.waitForTimeout(500);
+    const b = (await canvas.boundingBox())!;
+    await page.getByRole("button", { name: "Door", exact: true }).click();
+    await page.mouse.click(b.x + b.width * 0.5, b.y + b.height * 0.12);
+    await expect(page.getByText("Currently swings into the room, hinged on the left.")).toBeVisible();
+    await page.getByRole("button", { name: "Swing out of the room" }).click();
+    await page.getByRole("button", { name: "Move hinge to right" }).click();
+    await expect(page.getByText("Currently swings out of the room, hinged on the right.")).toBeVisible();
+    await expect.poll(async () => {
+      const d = (await doc(request, venue.id)).doors[0];
+      return [d?.flipSwing, d?.flipHinge];
+    }).toEqual([true, true]);
+  });
+
   test("an outlet can have more than two plugs", async ({ page, request }) => {
     const { venue, canvas, at } = await openVenue(page, request);
     await page.getByRole("button", { name: "Outlet", exact: true }).click();
@@ -286,3 +304,37 @@ test("plugging more strips into an outlet than it has plugs raises a problem", a
   await page.goto(`/#/event/${event.id}/reports`);
   await expect(page.getByText("North wall (outlet) needs 2 sockets but has 1")).toBeVisible();
 });
+
+test("a table can seat one side only", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await page.goto(`/#/event/${event.id}/plan`);
+  const canvas = page.locator("canvas").first();
+  await expect(canvas).toBeVisible();
+  const box = (await canvas.boundingBox())!;
+  await page.getByRole("button", { name: "Table", exact: true }).click();
+  await canvas.click({ position: { x: box.width * 0.5, y: box.height * 0.5 } });
+  await expect(page.getByLabel("Seats on")).toHaveValue("both");
+  await page.getByLabel("Seats on").selectOption("far");
+  await expect.poll(async () => {
+    const doc = (await (await request.get(`/api/events/${event.id}`)).json()).doc;
+    const added = doc.tables.find((t: { id: string }) => t.id !== "t1");
+    return [added?.seatSides, doc.seats.filter((s: { tableId: string }) => s.tableId === added?.id).length];
+  }).toEqual(["far", 2]);
+});
+
+test("auto-wire also wires seats that have no guest", async ({ page, request }) => {
+  const { event } = await seed(request);
+  await request.put(`/api/events/${event.id}`, { data: { doc: {
+    tables: [{ id: "t1", label: "Table 1", x: 12, y: 8, width: 6, depth: 2.5, seats: 1 }],
+    seats: [{ id: "t1-a0", tableId: "t1", x: 12, y: 6 }],
+    strips: [{ id: "st1", label: "Strip 1", x: 3, y: 3, sockets: 6, amps: 15, pluggedInto: { kind: "outlet", id: "o1" } }],
+    devices: [{ id: "sw1", label: "Switch 1", profileId: "switch-16", x: 10, y: 3 }],
+  } } });
+  await page.goto(`/#/event/${event.id}/plan`);
+  await page.getByRole("button", { name: "Auto-wire seats" }).click();
+  await expect.poll(async () => {
+    const seat = (await (await request.get(`/api/events/${event.id}`)).json()).doc.seats[0];
+    return [seat.stripId, seat.netDeviceId, seat.netPort];
+  }).toEqual(["st1", "sw1", 0]);
+});
+

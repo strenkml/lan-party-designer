@@ -17,7 +17,8 @@ const dist = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 
 /**
  * Fills in missing wiring: each unwired seat gets the nearest strip with room
- * and the nearest switch with a free port. Existing assignments are never changed.
+ * and the nearest switch with a free port, whether or not a guest is seated there.
+ * An empty seat reserves one socket and one port. Existing assignments are never changed.
  */
 export function autoWire(inputs: PowerInputs): AutoWireResult {
   const { event, people, profiles } = inputs;
@@ -34,12 +35,14 @@ export function autoWire(inputs: PowerInputs): AutoWireResult {
   );
   for (const seat of seats) {
     const load = report.seatLoads[seat.id];
-    if (seat.stripId || !load || load.deviceCount === 0) continue;
+    if (seat.stripId || !load) continue;
+    // A seat with no devices still gets a socket reserved.
+    const sockets = Math.max(load.deviceCount, 1);
     const candidates = event.strips
       .filter((strip) => {
         const state = stripState.get(strip.id)!;
         return (
-          state.sockets >= load.deviceCount &&
+          state.sockets >= sockets &&
           (state.typicalW + load.typicalW) / VOLTAGE <= strip.amps * NEAR_LIMIT
         );
       })
@@ -51,7 +54,7 @@ export function autoWire(inputs: PowerInputs): AutoWireResult {
     }
     seat.stripId = pick.id;
     const state = stripState.get(pick.id)!;
-    state.sockets -= load.deviceCount;
+    state.sockets -= sockets;
     state.typicalW += load.typicalW;
   }
 
@@ -79,7 +82,8 @@ export function autoWire(inputs: PowerInputs): AutoWireResult {
   }
 
   for (const seat of seats) {
-    if (seat.netDeviceId || !needsEthernet.get(seat.id)) continue;
+    // Only a seated guest who opted out skips the network. Empty seats are wired.
+    if (seat.netDeviceId || needsEthernet.get(seat.id) === false) continue;
     const open = switches
       .map((s) => {
         let port = 0;

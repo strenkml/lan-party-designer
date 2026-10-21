@@ -35,6 +35,35 @@ describe("layoutSeats", () => {
   });
 });
 
+describe("layoutSeats on one side", () => {
+  it("seats only the far edge, facing the table", () => {
+    const seats = layoutSeats(table({ seatSides: "far" }));
+    expect(seats.map((s) => s.id)).toEqual(["t1-a0", "t1-a1"]);
+    expect(seats.every((s) => s.y === 7.5 && s.rotation === 0)).toBe(true);
+  });
+
+  it("seats only the near edge, facing the table", () => {
+    const seats = layoutSeats(table({ seatSides: "near" }));
+    expect(seats.map((s) => s.id)).toEqual(["t1-b0", "t1-b1"]);
+    expect(seats.every((s) => s.y === 12.5 && s.rotation === 180)).toBe(true);
+  });
+
+  it("keeps the same spacing as a two sided table", () => {
+    const both = layoutSeats(table()).filter((s) => s.id.includes("-a")).map((s) => s.x);
+    expect(layoutSeats(table({ seatSides: "far" })).map((s) => s.x)).toEqual(both);
+  });
+
+  it("follows the table's rotation", () => {
+    const seats = layoutSeats(table({ seatSides: "far", rotation: 90, seats: 1 }));
+    expect(seats).toHaveLength(1);
+    expect(Math.round(seats[0]!.x * 100) / 100).toBe(12.5);
+  });
+
+  it("does not affect round tables", () => {
+    expect(layoutSeats(table({ shape: "round", width: 5, depth: 5, seats: 4, seatSides: "far" }))).toHaveLength(4);
+  });
+});
+
 describe("reconcileSeats", () => {
   it("keeps hand-moved seats and their wiring while recomputing the rest", () => {
     const t = table();
@@ -50,6 +79,15 @@ describe("reconcileSeats", () => {
     expect(result[0]).toMatchObject({ id: existing[0]!.id, x: 99, manual: true, stripId: "st1" });
     expect(result[1]).toMatchObject({ id: existing[1]!.id, stripId: "st1" });
     expect(result[1]!.x).not.toBe(existing[1]!.x);
+  });
+
+  it("drops the seats on the side that was switched off and brings them back later", () => {
+    const both = reconcileSeats(table(), []);
+    const far = reconcileSeats(table({ seatSides: "far" }), both);
+    expect(far.map((s) => s.id)).toEqual(["t1-a0", "t1-a1"]);
+    const again = reconcileSeats(table(), far);
+    expect(again).toHaveLength(4);
+    expect(again.find((s) => s.id === "t1-a0")).toEqual(far[0]);
   });
 
   it("drops seats beyond the new count", () => {
