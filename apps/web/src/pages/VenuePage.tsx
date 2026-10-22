@@ -5,6 +5,7 @@ import { FloorPlan, CIRCUIT_COLORS, type Selection, type Tool } from "../canvas/
 import { api, uploadUrl } from "../lib/api";
 import { ContextMenu, type MenuEntry } from "../lib/ContextMenu";
 import { useEditorKeys } from "../lib/keys";
+import { cloneVenueItem } from "../lib/venueOps";
 import { snapToWall } from "../lib/walls";
 import { invalidate } from "../lib/queries";
 import { href } from "../lib/route";
@@ -204,6 +205,16 @@ function VenueEditor({ id, name, status }: { id: string; name: string; status: s
           const id = newId("obstacle");
           update((d) => void d.obstacles.push({ ...o, id, x: o.x + 2, y: o.y + 2, label: `${o.label || "Obstacle"} copy` }));
           setSelection({ kind: "obstacle", id });
+        },
+      });
+    }
+    if (["door", "window", "garage", "outlet", "jack"].includes(sel.kind)) {
+      entries.push({
+        label: "Clone",
+        onSelect: () => {
+          let made: { kind: string; id: string } | null = null;
+          update((d) => void (made = cloneVenueItem(d, sel)));
+          if (made) setSelection(made as Selection);
         },
       });
     }

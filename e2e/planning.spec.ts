@@ -743,6 +743,31 @@ test.describe("right-click menus", () => {
     await item(page, "Outlet").click();
     await expect.poll(async () => (await doc()).outlets.length).toBe(1);
   });
+
+  test("a door, window, garage door, outlet and network jack can be cloned", async ({ page, request }) => {
+    const venue = await (await request.post("/api/venues", { data: { name: "Clone venue" } })).json();
+    await request.put(`/api/venues/${venue.id}`, { data: { doc: {
+      room: [{ x: 0, y: 0 }, { x: 24, y: 0 }, { x: 24, y: 16 }, { x: 0, y: 16 }],
+      doors: [{ id: "d1", x: 4, y: 0, width: 3, rotation: 0 }],
+      windows: [{ id: "w1", x: 10, y: 0, width: 4, rotation: 0 }],
+      garageDoors: [{ id: "g1", x: 16, y: 0, width: 5, rotation: 0 }],
+      outlets: [{ id: "o1", x: 0, y: 8, circuitId: null }],
+      jacks: [{ id: "j1", x: 24, y: 8, rotation: -90, heightIn: 12 }],
+    } } });
+    await page.goto(`/#/venue/${venue.id}`);
+    const canvas = page.locator("canvas").first();
+    await expect(canvas).toBeVisible();
+    await page.waitForTimeout(900);
+    const box = (await canvas.boundingBox())!;
+    const at = (x: number, y: number) => ({ x: box.width * (0.078 + (x / 24) * 0.625), y: box.height * (0.1035 + (y / 16) * 0.502) });
+    const doc = async () => (await (await request.get(`/api/venues/${venue.id}`)).json()).doc;
+
+    for (const [x, y, list] of [[4, 0.2, "doors"], [10, 0.2, "windows"], [16, 0.2, "garageDoors"], [0.2, 8, "outlets"], [23.8, 8, "jacks"]] as const) {
+      await canvas.click({ position: at(x, y), button: "right" });
+      await item(page, "Clone").click();
+      await expect.poll(async () => (await doc())[list].length).toBe(2);
+    }
+  });
 });
 
 test("a cable can be deleted with the Delete key, the panel or the right-click menu", async ({ page, request }) => {
